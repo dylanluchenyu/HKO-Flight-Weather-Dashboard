@@ -4,7 +4,6 @@ import { startTransition, useEffect, useState } from "react";
 import type {
   DashboardData,
   HorizonAirportSummary,
-  NormalizedFlight,
   Region,
   TableRow,
   TrafficType,
@@ -12,7 +11,6 @@ import type {
 } from "@/lib/types";
 
 const REFRESH_MS = 30 * 60 * 1000;
-const HKG_POINT = { lat: 22.308, lon: 113.9185 };
 type DirectionFilter = "both" | "arrival" | "departure";
 type TrafficFilter = "both" | TrafficType;
 type HorizonFilter = 6 | 12 | 15 | 18 | 24;
@@ -73,22 +71,6 @@ function buildDashboardUrl(args: {
     params.set("refresh", "true");
   }
   return `/api/dashboard?${params.toString()}`;
-}
-
-function project(point: { lat: number; lon: number }) {
-  return {
-    x: ((point.lon + 180) / 360) * 1000,
-    y: ((90 - point.lat) / 180) * 470
-  };
-}
-
-function pathForRoute(route: Array<{ lat: number; lon: number }>): string {
-  return route
-    .map((point, index) => {
-      const projected = project(point);
-      return `${index === 0 ? "M" : "L"} ${projected.x.toFixed(1)} ${projected.y.toFixed(1)}`;
-    })
-    .join(" ");
 }
 
 function SummaryList({ items }: { items: HorizonAirportSummary[] }) {
@@ -421,76 +403,6 @@ function OperationalConcerns({ data }: { data: DashboardData }) {
   );
 }
 
-function TrajectoryMap({ data }: { data: DashboardData }) {
-  const riskByAirport = new Map(data.weather.map((risk) => [risk.airportIata, risk]));
-  const flights = data.flights
-    .filter((flight) => flight.route.length > 0)
-    .sort((a, b) => new Date(a.scheduledTime).getTime() - new Date(b.scheduledTime).getTime())
-    .slice(0, 90);
-  const airportCodes = new Set(flights.map((flight) => flight.routeAirportIata));
-  const airports = data.airports.filter(
-    (airport) => airport.iata === "HKG" || airportCodes.has(airport.iata)
-  );
-  const hkg = project(HKG_POINT);
-
-  return (
-    <section className="panel map-panel">
-      <div className="section-heading">
-        <div>
-          <p className="eyebrow">GIS view</p>
-          <h2>Estimated Flight Trajectories</h2>
-        </div>
-        <div className="table-note">Great-circle routes, not live ADS-B tracks</div>
-      </div>
-      <svg className="world-map" viewBox="0 0 1000 470" role="img">
-        <defs>
-          <radialGradient id="hkgGlow" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="#fff7b0" stopOpacity="0.9" />
-            <stop offset="100%" stopColor="#fff7b0" stopOpacity="0" />
-          </radialGradient>
-        </defs>
-        <rect width="1000" height="470" rx="28" />
-        {[-120, -60, 0, 60, 120].map((lon) => {
-          const x = project({ lat: 0, lon }).x;
-          return <line className="grid-line" key={`lon-${lon}`} x1={x} x2={x} y1="24" y2="446" />;
-        })}
-        {[-45, 0, 45].map((lat) => {
-          const y = project({ lat, lon: 0 }).y;
-          return <line className="grid-line" key={`lat-${lat}`} x1="24" x2="976" y1={y} y2={y} />;
-        })}
-        <circle className="hkg-glow" cx={hkg.x} cy={hkg.y} r="76" />
-        {flights.map((flight) => {
-          const risk = riskByAirport.get(flight.routeAirportIata);
-          return (
-            <path
-              className={`route-line ${flight.direction} ${riskClass(risk?.level)}`}
-              d={pathForRoute(flight.route)}
-              key={flight.id}
-            />
-          );
-        })}
-        {airports.map((airport) => {
-          const point = project(airport);
-          const risk = riskByAirport.get(airport.iata);
-          return (
-            <g className="airport-marker" key={airport.iata}>
-              <circle className={riskClass(risk?.level)} cx={point.x} cy={point.y} r={airport.iata === "HKG" ? 7 : 4} />
-              <text x={point.x + 7} y={point.y - 7}>
-                {airport.iata}
-              </text>
-            </g>
-          );
-        })}
-      </svg>
-      <div className="map-legend">
-        <span><i className="legend-dot arrival" /> arrivals</span>
-        <span><i className="legend-dot departure" /> departures</span>
-        <span><i className="legend-dot risk-severe" /> bad weather</span>
-      </div>
-    </section>
-  );
-}
-
 export default function DashboardClient() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -596,31 +508,8 @@ export default function DashboardClient() {
           <SummaryStrip data={data} />
           <TopAirportsPanel data={data} />
           <OperationsTable data={data} />
-          <div className="split-grid">
-            <TrajectoryMap data={data} />
-            <OperationalConcerns data={data} />
-          </div>
+          <OperationalConcerns data={data} />
           <HorizonCards data={data} />
-          <section className="panel flights-panel">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">Raw feed sample</p>
-                <h2>Upcoming Flights</h2>
-              </div>
-            </div>
-            <div className="flight-list">
-              {data.flights.slice(0, 18).map((flight: NormalizedFlight) => (
-                <div className="flight-item" key={flight.id}>
-                  <strong>{flight.flightNumbers[0] ?? "Unknown"}</strong>
-                  <span>{flight.direction}</span>
-                  <span>{flight.routeAirportIata}</span>
-                  <span>{formatClock(flight.scheduledTime)}</span>
-                  <span>{flight.trafficType}</span>
-                  <span>{statusLabel(flight.arrivalStatus)}</span>
-                </div>
-              ))}
-            </div>
-          </section>
         </>
       ) : null}
     </main>

@@ -525,111 +525,19 @@ select:focus {
   background: rgba(248, 81, 73, 0.32);
 }
 
-.split-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(340px, 0.65fr);
-  gap: 1.5rem;
+.concerns-panel {
+  overflow: hidden;
   margin-bottom: 1.5rem;
 }
 
-.map-panel,
-.concerns-panel,
-.flights-panel {
-  overflow: hidden;
-}
-
-.world-map {
-  display: block;
-  width: calc(100% - 2rem);
-  margin: 0 1rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-}
-
-.world-map rect {
-  fill: #071e25;
-}
-
-.grid-line {
-  stroke: rgba(230, 237, 243, 0.11);
-  stroke-width: 1;
-}
-
-.hkg-glow {
-  fill: url("#hkgGlow");
-}
-
-.route-line {
-  fill: none;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  opacity: 0.48;
-}
-
-.route-line.arrival {
-  stroke: #79c0ff;
-}
-
-.route-line.departure {
-  stroke: #3fb950;
-}
-
-.route-line.risk-significant,
-.route-line.risk-severe {
-  stroke-width: 2.4;
-  opacity: 0.9;
-}
-
-.airport-marker circle {
-  stroke: #e6edf3;
-  stroke-width: 1.2;
-}
-
-.airport-marker text {
-  fill: #e6edf3;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 11px;
-  font-weight: 600;
-  paint-order: stroke;
-  stroke: rgba(7, 30, 37, 0.95);
-  stroke-width: 3px;
-}
-
-.map-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.85rem;
-  padding: 0 1rem 1rem;
-  color: var(--muted);
-  font-size: 0.82rem;
-  font-weight: 700;
-}
-
-.legend-dot {
-  display: inline-block;
-  width: 10px;
-  height: 10px;
-  margin-right: 0.35rem;
-  border-radius: 999px;
-}
-
-.legend-dot.arrival {
-  background: #79c0ff;
-}
-
-.legend-dot.departure {
-  background: #3fb950;
-}
-
-.concern-list,
-.flight-list {
+.concern-list {
   display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 0.55rem;
   padding: 0 1rem 1rem;
 }
 
 .concern-item,
-.flight-item,
 .summary-item {
   display: grid;
   align-items: center;
@@ -717,18 +625,6 @@ select:focus {
   font-weight: 600;
 }
 
-.flight-item {
-  grid-template-columns: 1.1fr 0.75fr 0.65fr 0.65fr 0.75fr 1fr;
-  gap: 0.55rem;
-  padding: 0.6rem 0.75rem;
-  color: var(--muted);
-  font-size: 0.84rem;
-}
-
-.flight-item strong {
-  color: var(--text);
-}
-
 .empty {
   margin: 0;
   color: var(--muted);
@@ -736,8 +632,7 @@ select:focus {
 }
 
 @media (max-width: 1180px) {
-  .hero,
-  .split-grid {
+  .hero {
     grid-template-columns: 1fr;
   }
 
@@ -769,7 +664,7 @@ select:focus {
     grid-template-columns: 1fr;
   }
 
-  .flight-item {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .concern-list {
+    grid-template-columns: 1fr;
   }
 }
