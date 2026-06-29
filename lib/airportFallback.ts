@@ -119,7 +119,7 @@ async function loadFallbackAirports(warnings: string[]): Promise<Map<string, Air
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 25000);
+      const timeout = setTimeout(() => controller.abort(), 8000);
     try {
       const response = await fetch(OUR_AIRPORTS_URL, {
         signal: controller.signal,

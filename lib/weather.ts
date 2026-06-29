@@ -149,7 +149,7 @@ export function classifyWeatherRisk(args: {
 async function fetchNoaa<T>(
   endpoint: "metar" | "taf",
   icaos: string[],
-  timeoutMs = 25000
+  timeoutMs = 8000
 ): Promise<T[]> {
   if (icaos.length === 0) {
     return [];
@@ -180,29 +180,34 @@ export async function fetchWeatherForAirports(
   airports: AirportMetadata[],
   warnings: string[]
 ): Promise<WeatherRisk[]> {
-  const icaos = [...new Set(airports.map((airport) => airport.icao))].slice(0, 180);
+  const icaos = [...new Set(airports.map((airport) => airport.icao))].slice(0, 90);
   if (icaos.length === 0) {
     return [];
   }
 
-  const tafIcaos = icaos.slice(0, 80);
+  const tafIcaos = icaos.slice(0, 45);
   if (icaos.length > tafIcaos.length) {
-    warnings.push("TAF forecast lookup limited to first 80 airports to keep refresh responsive.");
+    warnings.push("TAF forecast lookup limited to first 45 priority airports for faster loading.");
   }
 
   let metars: NoaaMetar[] = [];
   let tafs: NoaaTaf[] = [];
 
-  try {
-    metars = await fetchNoaa<NoaaMetar>("metar", icaos, 25000);
-  } catch (error) {
-    warnings.push(`NOAA METAR unavailable: ${String(error)}`);
+  const [metarResult, tafResult] = await Promise.allSettled([
+    fetchNoaa<NoaaMetar>("metar", icaos, 8000),
+    fetchNoaa<NoaaTaf>("taf", tafIcaos, 8000)
+  ]);
+
+  if (metarResult.status === "fulfilled") {
+    metars = metarResult.value;
+  } else {
+    warnings.push(`NOAA METAR unavailable: ${String(metarResult.reason)}`);
   }
 
-  try {
-    tafs = await fetchNoaa<NoaaTaf>("taf", tafIcaos, 25000);
-  } catch (error) {
-    warnings.push(`NOAA TAF unavailable: ${String(error)}`);
+  if (tafResult.status === "fulfilled") {
+    tafs = tafResult.value;
+  } else {
+    warnings.push(`NOAA TAF unavailable: ${String(tafResult.reason)}`);
   }
 
   const metarByIcao = new Map(metars.map((metar) => [metar.icaoId, metar]));

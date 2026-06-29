@@ -163,34 +163,48 @@ export async function fetchHkiaFlights(args: {
   const seen = new Set<string>();
   const flights: NormalizedFlight[] = [];
   let sourceUpdatedAt: string | undefined;
-
-  for (const direction of args.directions) {
-    for (const trafficType of args.trafficTypes) {
-      for (const date of dates) {
+  const jobs = args.directions.flatMap((direction) =>
+    args.trafficTypes.flatMap((trafficType) =>
+      dates.map(async (date) => {
         try {
-          const days = await fetchHkiaJson(date, direction, trafficType);
-          for (const day of days) {
-            if (day.lastUpdatedTime && (!sourceUpdatedAt || day.lastUpdatedTime > sourceUpdatedAt)) {
-              sourceUpdatedAt = day.lastUpdatedTime;
-            }
-            for (const item of day.list ?? []) {
-              const normalized = normalizeItem({
-                item,
-                day,
-                direction,
-                trafficType,
-                now: args.now
-              });
-              if (normalized && !seen.has(normalized.id)) {
-                seen.add(normalized.id);
-                flights.push(normalized);
-              }
-            }
-          }
+          return {
+            direction,
+            trafficType,
+            days: await fetchHkiaJson(date, direction, trafficType)
+          };
         } catch (error) {
-          args.warnings.push(
-            `HKIA ${direction}/${trafficType}/${date} unavailable: ${String(error)}`
-          );
+          return {
+            direction,
+            trafficType,
+            days: [],
+            warning: `HKIA ${direction}/${trafficType}/${date} unavailable: ${String(error)}`
+          };
+        }
+      })
+    )
+  );
+
+  const results = await Promise.all(jobs);
+
+  for (const result of results) {
+    if (result.warning) {
+      args.warnings.push(result.warning);
+    }
+    for (const day of result.days) {
+      if (day.lastUpdatedTime && (!sourceUpdatedAt || day.lastUpdatedTime > sourceUpdatedAt)) {
+        sourceUpdatedAt = day.lastUpdatedTime;
+      }
+      for (const item of day.list ?? []) {
+        const normalized = normalizeItem({
+          item,
+          day,
+          direction: result.direction,
+          trafficType: result.trafficType,
+          now: args.now
+        });
+        if (normalized && !seen.has(normalized.id)) {
+          seen.add(normalized.id);
+          flights.push(normalized);
         }
       }
     }

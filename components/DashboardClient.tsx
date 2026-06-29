@@ -5,12 +5,17 @@ import type {
   DashboardData,
   HorizonAirportSummary,
   NormalizedFlight,
+  Region,
   TableRow,
+  TrafficType,
   WeatherRiskLevel
 } from "@/lib/types";
 
 const REFRESH_MS = 30 * 60 * 1000;
 const HKG_POINT = { lat: 22.308, lon: 113.9185 };
+type DirectionFilter = "both" | "arrival" | "departure";
+type TrafficFilter = "both" | TrafficType;
+type HorizonFilter = 6 | 12 | 15 | 18 | 24;
 
 function formatDateTime(value?: string): string {
   if (!value) {
@@ -51,6 +56,23 @@ function statusLabel(status?: string): string {
     return "within 100km";
   }
   return "unknown";
+}
+
+function buildDashboardUrl(args: {
+  force: boolean;
+  direction: DirectionFilter;
+  traffic: TrafficFilter;
+  horizon: HorizonFilter;
+}): string {
+  const params = new URLSearchParams({
+    direction: args.direction,
+    traffic: args.traffic,
+    horizonHours: String(args.horizon)
+  });
+  if (args.force) {
+    params.set("refresh", "true");
+  }
+  return `/api/dashboard?${params.toString()}`;
 }
 
 function project(point: { lat: number; lon: number }) {
@@ -150,6 +172,185 @@ function OperationsTable({ data }: { data: DashboardData }) {
           </tbody>
         </table>
       </div>
+    </section>
+  );
+}
+
+function DashboardFilters({
+  direction,
+  traffic,
+  horizon,
+  disabled,
+  onDirectionChange,
+  onTrafficChange,
+  onHorizonChange
+}: {
+  direction: DirectionFilter;
+  traffic: TrafficFilter;
+  horizon: HorizonFilter;
+  disabled: boolean;
+  onDirectionChange: (value: DirectionFilter) => void;
+  onTrafficChange: (value: TrafficFilter) => void;
+  onHorizonChange: (value: HorizonFilter) => void;
+}) {
+  return (
+    <section className="filters" aria-label="Dashboard filters">
+      <div className="filter-group">
+        <label htmlFor="direction">Direction</label>
+        <select
+          id="direction"
+          value={direction}
+          disabled={disabled}
+          onChange={(event) => onDirectionChange(event.target.value as DirectionFilter)}
+        >
+          <option value="both">Both directions</option>
+          <option value="arrival">Inbound to HKIA</option>
+          <option value="departure">Outbound from HKIA</option>
+        </select>
+      </div>
+      <div className="filter-group">
+        <label htmlFor="traffic">Flight type</label>
+        <select
+          id="traffic"
+          value={traffic}
+          disabled={disabled}
+          onChange={(event) => onTrafficChange(event.target.value as TrafficFilter)}
+        >
+          <option value="both">Passenger + cargo</option>
+          <option value="passenger">Passenger</option>
+          <option value="cargo">Cargo</option>
+        </select>
+      </div>
+      <div className="filter-group">
+        <label htmlFor="horizon">Table horizon</label>
+        <select
+          id="horizon"
+          value={horizon}
+          disabled={disabled}
+          onChange={(event) => onHorizonChange(Number(event.target.value) as HorizonFilter)}
+        >
+          <option value={6}>Next 6h</option>
+          <option value={12}>Next 12h</option>
+          <option value={15}>T(now) to +15</option>
+          <option value={18}>Next 18h</option>
+          <option value={24}>Next 24h</option>
+        </select>
+      </div>
+    </section>
+  );
+}
+
+function getArrivalRateRow(data: DashboardData): TableRow | undefined {
+  return data.hourlyArrivalTable.find((row) => row.id === "arrival-rate");
+}
+
+function SummaryStrip({ data }: { data: DashboardData }) {
+  const arrivalValues =
+    getArrivalRateRow(data)?.values.filter(
+      (value): value is number => typeof value === "number"
+    ) ?? [];
+  const totalArrivals = arrivalValues.reduce((sum, value) => sum + value, 0);
+  const peak = arrivalValues.reduce(
+    (best, value, index) => (value > best.value ? { value, index } : best),
+    { value: 0, index: 0 }
+  );
+  const enRoute = data.flights.filter(
+    (flight) => flight.direction === "arrival" && flight.arrivalStatus === "enRoute"
+  ).length;
+  const weatherHits = data.weather.filter((risk) => risk.level !== "nil").length;
+
+  return (
+    <section className="summary">
+      <div className="summary-card">
+        <div className="value">{totalArrivals.toLocaleString()}</div>
+        <div className="label">Predicted arrivals in table</div>
+      </div>
+      <div className="summary-card">
+        <div className="value">{peak.value}</div>
+        <div className="label">Peak hour ({data.hours[peak.index]?.label ?? "T"})</div>
+      </div>
+      <div className="summary-card">
+        <div className="value">{enRoute.toLocaleString()}</div>
+        <div className="label">Inbound flights en route</div>
+      </div>
+      <div className="summary-card">
+        <div className="value">{weatherHits}</div>
+        <div className="label">Priority airports with bad weather</div>
+      </div>
+    </section>
+  );
+}
+
+function ArrivalRateChart({ data }: { data: DashboardData }) {
+  const values =
+    getArrivalRateRow(data)?.values.map((value) =>
+      typeof value === "number" ? value : 0
+    ) ?? [];
+  const max = Math.max(1, ...values);
+
+  return (
+    <section className="chart-wrap">
+      <div className="chart-title">Predicted inbound flights by hour (HK time)</div>
+      <div className="bar-chart">
+        {values.map((value, index) => (
+          <div className="bar-slot" key={data.hours[index]?.label ?? index}>
+            <div className="bar-value">{value}</div>
+            <div className="bar-track">
+              <div
+                className="bar-fill"
+                style={{ height: `${Math.max(6, (value / max) * 100)}%` }}
+              />
+            </div>
+            <div className="bar-label">{data.hours[index]?.label}</div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function TopAirportsPanel({ data }: { data: DashboardData }) {
+  const latest = data.horizons.find((horizon) => horizon.hours === 24) ?? data.horizons.at(-1);
+  const combined = new Map<string, HorizonAirportSummary>();
+  for (const item of [
+    ...(latest?.arrivalOrigins ?? []),
+    ...(latest?.departureDestinations ?? [])
+  ]) {
+    const existing = combined.get(item.airportIata);
+    combined.set(item.airportIata, {
+      ...item,
+      count: (existing?.count ?? 0) + item.count,
+      weather: item.weather ?? existing?.weather
+    });
+  }
+
+  const grouped = [...combined.values()]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 30)
+    .reduce<Record<string, HorizonAirportSummary[]>>((acc, item) => {
+      const region: Region | "Other" = item.airport?.region ?? "Other";
+      acc[region] = [...(acc[region] ?? []), item];
+      return acc;
+    }, {});
+
+  return (
+    <section className="top30-list">
+      <h3>Top airports to watch for weather</h3>
+      {Object.entries(grouped).map(([region, items]) => (
+        <div className="region-group" key={region}>
+          <div className="region-header">{region}</div>
+          <div className="region-items">
+            {items.map((item, index) => (
+              <span key={item.airportIata}>
+                <b className="rank">#{index + 1}</b>
+                <b className="code">{item.airportIata}</b>
+                <em className="icao">{item.airport?.icao ?? "----"}</em>
+                <small>{item.count} flights</small>
+              </span>
+            ))}
+          </div>
+        </div>
+      ))}
     </section>
   );
 }
@@ -295,14 +496,18 @@ export default function DashboardClient() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [direction, setDirection] = useState<DirectionFilter>("both");
+  const [traffic, setTraffic] = useState<TrafficFilter>("both");
+  const [horizon, setHorizon] = useState<HorizonFilter>(15);
 
   async function loadDashboard(force = false) {
     setError(null);
     setRefreshing(force);
     try {
-      const response = await fetch(`/api/dashboard${force ? "?refresh=true" : ""}`, {
-        cache: "no-store"
-      });
+      const response = await fetch(
+        buildDashboardUrl({ force, direction, traffic, horizon }),
+        { cache: "no-store" }
+      );
       if (!response.ok) {
         throw new Error(`Dashboard API ${response.status}`);
       }
@@ -325,7 +530,7 @@ export default function DashboardClient() {
       void loadDashboard(true);
     }, REFRESH_MS);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [direction, traffic, horizon]);
 
   if (loading && !data) {
     return (
@@ -339,12 +544,12 @@ export default function DashboardClient() {
     <main className="dashboard-shell">
       <section className="hero">
         <div>
-          <p className="eyebrow">Hong Kong Observatory internship first draft</p>
-          <h1>HKO Flight Weather Dashboard</h1>
+          <p className="eyebrow">Hong Kong International Airport · VHHH</p>
+          <h1>HKIA Flight Weather Dashboard</h1>
           <p className="hero-copy">
-            Arrival-flow awareness for the next operational hours: which flights are
-            en route, which are still on land, and where bad weather may affect
-            traffic-rate decisions.
+            Live outbound / inbound passenger and cargo flights by hour, with
+            weather-priority airports and Wallace&apos;s arrival situational-awareness
+            table for operational planning.
           </p>
         </div>
         <div className="status-card">
@@ -378,6 +583,18 @@ export default function DashboardClient() {
 
       {data ? (
         <>
+          <DashboardFilters
+            direction={direction}
+            traffic={traffic}
+            horizon={horizon}
+            disabled={refreshing}
+            onDirectionChange={setDirection}
+            onTrafficChange={setTraffic}
+            onHorizonChange={setHorizon}
+          />
+          <ArrivalRateChart data={data} />
+          <SummaryStrip data={data} />
+          <TopAirportsPanel data={data} />
           <OperationsTable data={data} />
           <div className="split-grid">
             <TrajectoryMap data={data} />

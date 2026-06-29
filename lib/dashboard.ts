@@ -110,6 +110,21 @@ function enrichFlightsWithFallbacks(
   });
 }
 
+function prioritizeAirportsForWeather(
+  flights: NormalizedFlight[],
+  airports: AirportMetadata[],
+  limit = 72
+): AirportMetadata[] {
+  const counts = new Map<string, number>([["HKG", Number.MAX_SAFE_INTEGER]]);
+  for (const flight of flights) {
+    counts.set(flight.routeAirportIata, (counts.get(flight.routeAirportIata) ?? 0) + 1);
+  }
+
+  return [...airports]
+    .sort((a, b) => (counts.get(b.iata) ?? 0) - (counts.get(a.iata) ?? 0))
+    .slice(0, limit);
+}
+
 function getWeatherByIata(weather: WeatherRisk[]): Map<string, WeatherRisk> {
   return new Map(weather.map((risk) => [risk.airportIata, risk]));
 }
@@ -306,9 +321,13 @@ export async function getDashboardData(
     warnings
   });
 
+  const dashboardEnd = addHours(now, 24);
+  const timedRawFlights = rawFlights.filter((flight) =>
+    inWindow(flight, now, dashboardEnd)
+  );
   const missingBeforeFallback = [
     ...new Set(
-      rawFlights
+      timedRawFlights
         .filter((flight) => !flight.routeAirport)
         .map((flight) => flight.routeAirportIata)
     )
@@ -317,9 +336,7 @@ export async function getDashboardData(
     missingBeforeFallback.length > 0
       ? await fetchAirportFallbacks(missingBeforeFallback, warnings)
       : new Map<string, AirportMetadata>();
-  const enrichedFlights = enrichFlightsWithFallbacks(rawFlights, fallbacks, now);
-  const dashboardEnd = addHours(now, 24);
-  const flights = enrichedFlights.filter((flight) => inWindow(flight, now, dashboardEnd));
+  const flights = enrichFlightsWithFallbacks(timedRawFlights, fallbacks, now);
   const missingAirports = [
     ...new Set(
       flights
@@ -339,7 +356,13 @@ export async function getDashboardData(
     [HKG_AIRPORT, ...routeAirports].map((airport) => [airport.iata, airport])
   );
   const airports = [...airportMap.values()];
-  const weather = await fetchWeatherForAirports(airports, warnings);
+  const priorityAirports = prioritizeAirportsForWeather(flights, airports);
+  if (airports.length > priorityAirports.length) {
+    warnings.push(
+      `Weather lookup focused on ${priorityAirports.length} priority airports out of ${airports.length} mapped airports.`
+    );
+  }
+  const weather = await fetchWeatherForAirports(priorityAirports, warnings);
   const hourly = buildHourlyArrivalTable({
     flights,
     weather,
