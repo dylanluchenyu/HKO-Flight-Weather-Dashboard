@@ -458,11 +458,6 @@ export default function DashboardClient() {
         <div>
           <p className="eyebrow">Hong Kong International Airport · VHHH</p>
           <h1>HKIA Flight Weather Dashboard</h1>
-          <p className="hero-copy">
-            Live outbound / inbound passenger and cargo flights by hour, with
-            weather-priority airports and Wallace&apos;s arrival situational-awareness
-            table for operational planning.
-          </p>
         </div>
         <div className="status-card">
           <div>
@@ -484,14 +479,6 @@ export default function DashboardClient() {
       </section>
 
       {error ? <div className="notice error-notice">{error}</div> : null}
-      {data?.warnings.length ? (
-        <div className="notice warning-notice">
-          <strong>Live-data notes</strong>
-          {data.warnings.slice(0, 4).map((warning) => (
-            <span key={warning}>{warning}</span>
-          ))}
-        </div>
-      ) : null}
 
       {data ? (
         <>
