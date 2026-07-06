@@ -128,7 +128,9 @@ export const REGIONS: Region[] = [
   "Middle East",
   "Oceania",
   "America",
-  "Europe"
+  "Africa",
+  "Europe",
+  "Other"
 ];
 
 const GREATER_CHINA = new Set(["China", "Hong Kong", "Macau", "Taiwan"]);
@@ -143,6 +145,13 @@ const MIDDLE_EAST = new Set([
 ]);
 const OCEANIA = new Set(["Australia", "New Zealand"]);
 const AMERICA = new Set(["United States", "Canada", "Mexico"]);
+const AFRICA = new Set([
+  "Egypt",
+  "Ethiopia",
+  "Kenya",
+  "Morocco",
+  "South Africa"
+]);
 const EUROPE = new Set([
   "Austria",
   "Belgium",
@@ -185,6 +194,9 @@ export function inferRegionFromCountry(country?: string): Region {
   }
   if (AMERICA.has(country)) {
     return "America";
+  }
+  if (AFRICA.has(country)) {
+    return "Africa";
   }
   if (EUROPE.has(country)) {
     return "Europe";

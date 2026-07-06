@@ -13,13 +13,24 @@ import type {
 const REFRESH_MS = 30 * 60 * 1000;
 type DirectionFilter = "both" | "arrival" | "departure";
 type TrafficFilter = "both" | TrafficType;
-type HorizonFilter = 6 | 12 | 15 | 18 | 24;
+type HorizonFilter = 6 | 12 | 15 | 18 | 24 | 30;
+const REGION_ORDER: Array<Region | "Other"> = [
+  "Greater China",
+  "Asia",
+  "Middle East",
+  "Oceania",
+  "America",
+  "Africa",
+  "Europe",
+  "Other"
+];
 
 function formatDateTime(value?: string): string {
   if (!value) {
     return "Not available";
   }
   return new Intl.DateTimeFormat("en-HK", {
+    timeZone: "Asia/Hong_Kong",
     month: "short",
     day: "2-digit",
     hour: "2-digit",
@@ -33,10 +44,23 @@ function formatClock(value?: string): string {
     return "--:--";
   }
   return new Intl.DateTimeFormat("en-HK", {
+    timeZone: "Asia/Hong_Kong",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false
   }).format(new Date(value));
+}
+
+function formatUtcClock(value?: string): string {
+  if (!value) {
+    return "--:--Z";
+  }
+  return `${new Intl.DateTimeFormat("en-GB", {
+    timeZone: "UTC",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).format(new Date(value))}Z`;
 }
 
 function riskClass(level?: WeatherRiskLevel): string {
@@ -48,12 +72,42 @@ function statusLabel(status?: string): string {
     return "en route";
   }
   if (status === "onLand") {
-    return "on land";
+    return "on ground";
   }
   if (status === "within100km") {
-    return "within 100km";
+    return "within 100km of HK";
   }
   return "unknown";
+}
+
+function directionTitle(direction: DirectionFilter): string {
+  if (direction === "arrival") {
+    return "Inbound";
+  }
+  if (direction === "departure") {
+    return "Outbound";
+  }
+  return "Combined inbound + outbound";
+}
+
+function directionVolumeLabel(direction: DirectionFilter): string {
+  if (direction === "arrival") {
+    return "Predicted arrivals in table";
+  }
+  if (direction === "departure") {
+    return "Predicted departures in table";
+  }
+  return "Predicted arrivals + departures";
+}
+
+function directionChartTitle(direction: DirectionFilter): string {
+  if (direction === "arrival") {
+    return "Predicted inbound flights by hour";
+  }
+  if (direction === "departure") {
+    return "Predicted outbound flights by hour";
+  }
+  return "Predicted inbound + outbound flights by hour";
 }
 
 function buildDashboardUrl(args: {
@@ -114,15 +168,21 @@ function CellValue({
   );
 }
 
-function OperationsTable({ data }: { data: DashboardData }) {
+function OperationsTable({
+  data,
+  direction
+}: {
+  data: DashboardData;
+  direction: DirectionFilter;
+}) {
   return (
     <section className="panel table-panel">
       <div className="section-heading">
         <div>
           <p className="eyebrow">Wallace table</p>
-          <h2>Flight Situational Awareness</h2>
+          <h2>{directionTitle(direction)} Flight Situational Awareness</h2>
         </div>
-        <div className="table-note">Auto-refresh every 30 min</div>
+        <div className="table-note">HKT / UTC Z · Auto-refresh 30 min</div>
       </div>
       <div className="table-scroll">
         <table className="ops-table">
@@ -132,7 +192,11 @@ function OperationsTable({ data }: { data: DashboardData }) {
               {data.hours.map((hour) => (
                 <th key={hour.label}>
                   <span>{hour.label}</span>
-                  <small>{formatClock(hour.startsAt)}</small>
+                  <small>
+                    HKT {formatClock(hour.startsAt)}
+                    <br />
+                    {formatUtcClock(hour.startsAt)}
+                  </small>
                 </th>
               ))}
             </tr>
@@ -216,36 +280,48 @@ function DashboardFilters({
           <option value={15}>T(now) to +15</option>
           <option value={18}>Next 18h</option>
           <option value={24}>Next 24h</option>
+          <option value={30}>Next 30h</option>
         </select>
       </div>
     </section>
   );
 }
 
-function getArrivalRateRow(data: DashboardData): TableRow | undefined {
-  return data.hourlyArrivalTable.find((row) => row.id === "arrival-rate");
+function getFlightRateRow(data: DashboardData): TableRow | undefined {
+  return data.hourlyArrivalTable.find(
+    (row) => row.id === "flight-rate" || row.id === "arrival-rate"
+  );
 }
 
-function SummaryStrip({ data }: { data: DashboardData }) {
-  const arrivalValues =
-    getArrivalRateRow(data)?.values.filter(
+function SummaryStrip({
+  data,
+  direction
+}: {
+  data: DashboardData;
+  direction: DirectionFilter;
+}) {
+  const volumeValues =
+    getFlightRateRow(data)?.values.filter(
       (value): value is number => typeof value === "number"
     ) ?? [];
-  const totalArrivals = arrivalValues.reduce((sum, value) => sum + value, 0);
-  const peak = arrivalValues.reduce(
+  const totalFlights = volumeValues.reduce((sum, value) => sum + value, 0);
+  const peak = volumeValues.reduce(
     (best, value, index) => (value > best.value ? { value, index } : best),
     { value: 0, index: 0 }
   );
   const enRoute = data.flights.filter(
-    (flight) => flight.direction === "arrival" && flight.arrivalStatus === "enRoute"
+    (flight) => (flight.flightStatus ?? flight.arrivalStatus) === "enRoute"
+  ).length;
+  const within100km = data.flights.filter(
+    (flight) => (flight.flightStatus ?? flight.arrivalStatus) === "within100km"
   ).length;
   const weatherHits = data.weather.filter((risk) => risk.level !== "nil").length;
 
   return (
     <section className="summary">
       <div className="summary-card">
-        <div className="value">{totalArrivals.toLocaleString()}</div>
-        <div className="label">Predicted arrivals in table</div>
+        <div className="value">{totalFlights.toLocaleString()}</div>
+        <div className="label">{directionVolumeLabel(direction)}</div>
       </div>
       <div className="summary-card">
         <div className="value">{peak.value}</div>
@@ -253,7 +329,11 @@ function SummaryStrip({ data }: { data: DashboardData }) {
       </div>
       <div className="summary-card">
         <div className="value">{enRoute.toLocaleString()}</div>
-        <div className="label">Inbound flights en route</div>
+        <div className="label">Flights estimated en route</div>
+      </div>
+      <div className="summary-card">
+        <div className="value">{within100km.toLocaleString()}</div>
+        <div className="label">En-route flights within 100km of HK</div>
       </div>
       <div className="summary-card">
         <div className="value">{weatherHits}</div>
@@ -263,16 +343,22 @@ function SummaryStrip({ data }: { data: DashboardData }) {
   );
 }
 
-function ArrivalRateChart({ data }: { data: DashboardData }) {
+function ArrivalRateChart({
+  data,
+  direction
+}: {
+  data: DashboardData;
+  direction: DirectionFilter;
+}) {
   const values =
-    getArrivalRateRow(data)?.values.map((value) =>
+    getFlightRateRow(data)?.values.map((value) =>
       typeof value === "number" ? value : 0
     ) ?? [];
   const max = Math.max(1, ...values);
 
   return (
     <section className="chart-wrap">
-      <div className="chart-title">Predicted inbound flights by hour (HK time)</div>
+      <div className="chart-title">{directionChartTitle(direction)} · HKT / UTC Z</div>
       <div className="bar-chart">
         {values.map((value, index) => (
           <div className="bar-slot" key={data.hours[index]?.label ?? index}>
@@ -283,7 +369,11 @@ function ArrivalRateChart({ data }: { data: DashboardData }) {
                 style={{ height: `${Math.max(6, (value / max) * 100)}%` }}
               />
             </div>
-            <div className="bar-label">{data.hours[index]?.label}</div>
+            <div className="bar-label">
+              <span>{data.hours[index]?.label}</span>
+              <small>{formatClock(data.hours[index]?.startsAt)}</small>
+              <small>{formatUtcClock(data.hours[index]?.startsAt)}</small>
+            </div>
           </div>
         ))}
       </div>
@@ -292,7 +382,7 @@ function ArrivalRateChart({ data }: { data: DashboardData }) {
 }
 
 function TopAirportsPanel({ data }: { data: DashboardData }) {
-  const latest = data.horizons.find((horizon) => horizon.hours === 24) ?? data.horizons.at(-1);
+  const latest = data.horizons.find((horizon) => horizon.hours === 30) ?? data.horizons.at(-1);
   const combined = new Map<string, HorizonAirportSummary>();
   for (const item of [
     ...(latest?.arrivalOrigins ?? []),
@@ -314,11 +404,14 @@ function TopAirportsPanel({ data }: { data: DashboardData }) {
       acc[region] = [...(acc[region] ?? []), item];
       return acc;
     }, {});
+  const orderedGroups = REGION_ORDER.flatMap((region) =>
+    grouped[region]?.length ? [[region, grouped[region]] as const] : []
+  );
 
   return (
     <section className="top30-list">
-      <h3>Top airports to watch for weather</h3>
-      {Object.entries(grouped).map(([region, items]) => (
+      <h3>Top airports to watch for weather · next 30h</h3>
+      {orderedGroups.map(([region, items]) => (
         <div className="region-group" key={region}>
           <div className="region-header">{region}</div>
           <div className="region-items">
@@ -333,6 +426,62 @@ function TopAirportsPanel({ data }: { data: DashboardData }) {
           </div>
         </div>
       ))}
+    </section>
+  );
+}
+
+function MethodologyPanel() {
+  const notes = [
+    {
+      title: "Table criteria",
+      text:
+        "Rows include scheduled HKIA flights matching the selected direction and flight type, grouped by one-hour buckets from T(now)."
+    },
+    {
+      title: "Priority airport",
+      text:
+        "HKG plus route airports ranked by flight count; the busiest mapped airports are queried first for METAR and TAF to keep refresh fast."
+    },
+    {
+      title: "TAF",
+      text:
+        "The TAF row is forecast-only. The bad-weather row combines METAR observations, available TAF, and affected route airports."
+    },
+    {
+      title: "Severity",
+      text:
+        "Significant means wind or gust at least 35 kt, visibility below 0.62 SM, ceiling below 1000 ft, or listed hazard weather codes. Severe includes TS, FZ, SQ, FC, VA, SS, and DS."
+    },
+    {
+      title: "Flight status",
+      text:
+        "En route and within 100km are estimates from schedule, distance, and 820 km/h cruise speed; within 100km only counts flights already estimated airborne near Hong Kong."
+    },
+    {
+      title: "On ground",
+      text:
+        "For arrivals, on ground means still at the origin airport. For departures, on ground means still at HKIA before scheduled departure."
+    },
+    {
+      title: "Greater China",
+      text: "Greater China includes mainland China, Hong Kong, Macau, and Taiwan."
+    }
+  ];
+
+  return (
+    <section className="methodology-panel">
+      <div>
+        <p className="eyebrow">Methodology</p>
+        <h2>How The Wallace Table Is Generated</h2>
+      </div>
+      <div className="methodology-grid">
+        {notes.map((note) => (
+          <article key={note.title}>
+            <strong>{note.title}</strong>
+            <p>{note.text}</p>
+          </article>
+        ))}
+      </div>
     </section>
   );
 }
@@ -376,7 +525,7 @@ function OperationalConcerns({ data }: { data: DashboardData }) {
         </div>
       </div>
       {concerns.length === 0 ? (
-        <p className="empty">No bad-weather airport matches in the current 24-hour window.</p>
+        <p className="empty">No bad-weather airport matches in the current 30-hour window.</p>
       ) : (
         <div className="concern-list">
           {concerns.map((flight) => {
@@ -491,10 +640,11 @@ export default function DashboardClient() {
             onTrafficChange={setTraffic}
             onHorizonChange={setHorizon}
           />
-          <ArrivalRateChart data={data} />
-          <SummaryStrip data={data} />
+          <ArrivalRateChart data={data} direction={direction} />
+          <SummaryStrip data={data} direction={direction} />
           <TopAirportsPanel data={data} />
-          <OperationsTable data={data} />
+          <MethodologyPanel />
+          <OperationsTable data={data} direction={direction} />
           <OperationalConcerns data={data} />
           <HorizonCards data={data} />
         </>

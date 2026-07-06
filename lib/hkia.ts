@@ -2,8 +2,8 @@ import { getAirport } from "./airports";
 import { distanceKm, greatCircleRoute, HKG_AIRPORT } from "./geo";
 import { addDays, getHongKongDateString, parseHkiaDateTime } from "./time";
 import type {
-  ArrivalStatus,
   FlightDirection,
+  FlightStatus,
   NormalizedFlight,
   TrafficType
 } from "./types";
@@ -33,28 +33,40 @@ const HKIA_FLIGHTS_URL =
 const CRUISE_SPEED_KMH = 820;
 const AIRBORNE_BUFFER_HOURS = 0.55;
 
-function estimateArrivalStatus(
+function estimateFlightStatus(
   now: Date,
-  scheduledArrival: Date,
-  distance: number
-): ArrivalStatus {
+  scheduledTime: Date,
+  distance: number,
+  direction: FlightDirection
+): FlightStatus {
   const flightHours = Math.max(1, distance / CRUISE_SPEED_KMH + AIRBORNE_BUFFER_HOURS);
-  const estimatedDeparture = new Date(
-    scheduledArrival.getTime() - flightHours * 60 * 60 * 1000
-  );
-  const remainingHours =
-    (scheduledArrival.getTime() - now.getTime()) / (60 * 60 * 1000);
-  const remainingDistance = Math.max(
-    0,
-    Math.min(distance, remainingHours * CRUISE_SPEED_KMH)
-  );
 
-  if (remainingDistance <= 100) {
-    return "within100km";
+  if (direction === "departure") {
+    if (now < scheduledTime) {
+      return "onLand";
+    }
+
+    const elapsedHours = (now.getTime() - scheduledTime.getTime()) / (60 * 60 * 1000);
+    const distanceFromHongKong = Math.max(
+      0,
+      Math.min(distance, elapsedHours * CRUISE_SPEED_KMH)
+    );
+
+    if (distanceFromHongKong <= 100) {
+      return "within100km";
+    }
+    return elapsedHours <= flightHours ? "enRoute" : "onLand";
   }
 
+  const estimatedDeparture = new Date(scheduledTime.getTime() - flightHours * 60 * 60 * 1000);
   if (now < estimatedDeparture) {
     return "onLand";
+  }
+
+  const remainingHours = (scheduledTime.getTime() - now.getTime()) / (60 * 60 * 1000);
+  const remainingDistance = Math.max(0, Math.min(distance, remainingHours * CRUISE_SPEED_KMH));
+  if (remainingDistance <= 100) {
+    return "within100km";
   }
 
   return "enRoute";
@@ -121,6 +133,9 @@ function normalizeItem(args: {
         ? greatCircleRoute(HKG_AIRPORT, airport)
         : [];
   const routeDistance = airport ? distanceKm(airport, HKG_AIRPORT) : undefined;
+  const flightStatus = routeDistance
+    ? estimateFlightStatus(args.now, scheduled, routeDistance, args.direction)
+    : undefined;
   const flightNumbers = args.item.flight?.map((flight) => flight.no ?? "").filter(Boolean) ?? [];
   const airlineCodes =
     args.item.flight?.map((flight) => flight.airline ?? "").filter(Boolean) ?? [];
@@ -143,10 +158,8 @@ function normalizeItem(args: {
     region: airport?.region ?? "Other",
     statusText: args.item.status,
     statusCode: args.item.statusCode,
-    arrivalStatus:
-      args.direction === "arrival" && routeDistance
-        ? estimateArrivalStatus(args.now, scheduled, routeDistance)
-        : undefined,
+    arrivalStatus: args.direction === "arrival" ? flightStatus : undefined,
+    flightStatus,
     distanceKm: routeDistance,
     route
   };
@@ -159,7 +172,7 @@ export async function fetchHkiaFlights(args: {
   warnings: string[];
 }): Promise<{ flights: NormalizedFlight[]; sourceUpdatedAt?: string }> {
   const today = getHongKongDateString(args.now);
-  const dates = [today, addDays(today, 1)];
+  const dates = [today, addDays(today, 1), addDays(today, 2)];
   const seen = new Set<string>();
   const flights: NormalizedFlight[] = [];
   let sourceUpdatedAt: string | undefined;

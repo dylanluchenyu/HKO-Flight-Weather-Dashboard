@@ -29,7 +29,7 @@ const MIDDLE_EAST_CODES = new Set([
   "YE"
 ]);
 
-function regionFromOurAirports(continent: string, isoCountry: string): Region {
+export function regionFromOurAirports(continent: string, isoCountry: string): Region {
   if (GREATER_CHINA_CODES.has(isoCountry)) {
     return "Greater China";
   }
@@ -41,6 +41,9 @@ function regionFromOurAirports(continent: string, isoCountry: string): Region {
   }
   if (continent === "NA" || continent === "SA") {
     return "America";
+  }
+  if (continent === "AF") {
+    return "Africa";
   }
   if (continent === "EU") {
     return "Europe";

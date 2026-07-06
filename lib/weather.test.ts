@@ -36,4 +36,20 @@ describe("weather risk classification", () => {
       expect.arrayContaining(["Wind/gust 38 kt", "Ceiling 600 ft"])
     );
   });
+
+  it("flags TAF hazard and gust criteria without a METAR", () => {
+    const risk = classifyWeatherRisk({
+      airportIata: "TPE",
+      airportIcao: "RCTP",
+      taf: {
+        icaoId: "RCTP",
+        rawTAF: "TAF RCTP 290500Z 2906/3012 09012G38KT 4000 TSRA BKN012"
+      }
+    });
+
+    expect(risk.level).toBe("severe");
+    expect(risk.reasons).toEqual(
+      expect.arrayContaining(["Weather code TS", "TAF gust 38 kt"])
+    );
+  });
 });

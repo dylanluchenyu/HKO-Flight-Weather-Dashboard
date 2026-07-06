@@ -4,7 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "HKO Flight Weather Dashboard",
   description:
-    "Real-time flight situational awareness dashboard for Hong Kong arrivals and weather impact."
+    "Real-time flight situational awareness dashboard for HKIA arrivals, departures, and weather impact."
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

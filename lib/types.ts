@@ -6,9 +6,11 @@ export type Region =
   | "Middle East"
   | "Oceania"
   | "America"
+  | "Africa"
   | "Europe"
   | "Other";
-export type ArrivalStatus = "enRoute" | "onLand" | "within100km";
+export type FlightStatus = "enRoute" | "onLand" | "within100km";
+export type ArrivalStatus = FlightStatus;
 export type WeatherRiskLevel = "nil" | "caution" | "significant" | "severe";
 
 export interface AirportMetadata {
@@ -51,6 +53,7 @@ export interface NormalizedFlight {
   statusText?: string;
   statusCode?: string | null;
   arrivalStatus?: ArrivalStatus;
+  flightStatus?: FlightStatus;
   distanceKm?: number;
   route: RoutePoint[];
 }
@@ -66,7 +69,7 @@ export interface TableRow {
   id: string;
   label: string;
   region?: Region;
-  status?: ArrivalStatus;
+  status?: FlightStatus;
   values: Array<number | string>;
   severity?: WeatherRiskLevel[];
 }
@@ -79,7 +82,7 @@ export interface HorizonAirportSummary {
 }
 
 export interface HorizonSummary {
-  hours: 6 | 12 | 18 | 24;
+  hours: 6 | 12 | 18 | 24 | 30;
   departureDestinations: HorizonAirportSummary[];
   arrivalOrigins: HorizonAirportSummary[];
   badWeatherAirports: HorizonAirportSummary[];
@@ -101,6 +104,6 @@ export interface DashboardData {
 export interface DashboardOptions {
   direction: FlightDirection | "both";
   traffic: TrafficType | "both";
-  horizonHours: 6 | 12 | 15 | 18 | 24;
+  horizonHours: 6 | 12 | 15 | 18 | 24 | 30;
   refresh: boolean;
 }

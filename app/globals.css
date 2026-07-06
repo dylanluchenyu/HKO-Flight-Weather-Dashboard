@@ -227,7 +227,8 @@ select:focus {
 
 .panel,
 .chart-wrap,
-.top30-list {
+.top30-list,
+.methodology-panel {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
@@ -254,6 +255,7 @@ select:focus {
 }
 
 .chart-wrap {
+  overflow-x: auto;
   padding: 1.25rem;
   margin-bottom: 1rem;
 }
@@ -266,10 +268,11 @@ select:focus {
 }
 
 .bar-chart {
+  min-width: 920px;
   height: 300px;
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(38px, 1fr));
-  gap: 0.45rem;
+  grid-template-columns: repeat(auto-fit, minmax(30px, 1fr));
+  gap: 0.35rem;
   align-items: end;
   padding-top: 0.4rem;
 }
@@ -289,6 +292,22 @@ select:focus {
   font-family: "JetBrains Mono", monospace;
   font-size: 0.68rem;
   text-align: center;
+}
+
+.bar-label {
+  display: grid;
+  gap: 0.05rem;
+  min-height: 44px;
+}
+
+.bar-label span {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.bar-label small {
+  color: var(--muted);
+  font-size: 0.58rem;
 }
 
 .bar-track {
@@ -352,11 +371,15 @@ select:focus {
 }
 
 .region-group {
-  margin-bottom: 0.8rem;
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid rgba(48, 54, 61, 0.65);
 }
 
 .region-group:last-child {
   margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: 0;
 }
 
 .region-header {
@@ -422,7 +445,7 @@ select:focus {
 
 .ops-table {
   width: 100%;
-  min-width: 1280px;
+  min-width: 1720px;
   border-collapse: collapse;
   font-size: 0.82rem;
 }
@@ -446,10 +469,11 @@ select:focus {
 
 .ops-table thead small {
   display: block;
-  margin-top: 0.15rem;
+  margin-top: 0.2rem;
   color: var(--muted);
   font-family: "JetBrains Mono", monospace;
-  font-size: 0.64rem;
+  font-size: 0.6rem;
+  line-height: 1.25;
 }
 
 .ops-table .row-label {
@@ -563,9 +587,43 @@ select:focus {
   text-align: center;
 }
 
+.methodology-panel {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  gap: 1rem;
+  margin-bottom: 1.5rem;
+  padding: 1rem 1.25rem;
+}
+
+.methodology-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 0.75rem;
+}
+
+.methodology-grid article {
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(13, 17, 23, 0.3);
+}
+
+.methodology-grid strong {
+  display: block;
+  margin-bottom: 0.25rem;
+  color: var(--accent);
+  font-size: 0.78rem;
+}
+
+.methodology-grid p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
 .horizon-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 1rem;
   margin-bottom: 1.5rem;
 }
@@ -626,6 +684,10 @@ select:focus {
   .horizon-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .methodology-panel {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 720px) {
@@ -644,7 +706,7 @@ select:focus {
 
   .bar-chart {
     height: 220px;
-    grid-template-columns: repeat(auto-fit, minmax(28px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(24px, 1fr));
   }
 
   .horizon-grid {
