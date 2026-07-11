@@ -244,8 +244,7 @@ select:focus {
 
 .panel,
 .chart-wrap,
-.top30-list,
-.methodology-panel {
+.top30-list {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
@@ -612,58 +611,6 @@ select:focus {
   text-align: center;
 }
 
-.methodology-panel {
-  display: grid;
-  grid-template-columns: 230px minmax(0, 1fr);
-  gap: 1rem;
-  margin-bottom: 1.5rem;
-  padding: 1rem 1.25rem;
-}
-
-.methodology-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-  gap: 0.75rem;
-}
-
-.methodology-grid article {
-  padding: 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: rgba(13, 17, 23, 0.3);
-}
-
-.methodology-grid strong {
-  display: block;
-  margin-bottom: 0.25rem;
-  color: var(--accent);
-  font-size: 0.78rem;
-}
-
-.methodology-grid p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.78rem;
-}
-
-.methodology-sources {
-  grid-column: 2;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.45rem 0.9rem;
-  align-items: baseline;
-  color: var(--muted);
-  font-size: 0.76rem;
-}
-
-.methodology-sources strong {
-  color: var(--text);
-}
-
-.methodology-sources a {
-  color: var(--accent);
-}
-
 .horizon-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -728,13 +675,6 @@ select:focus {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .methodology-panel {
-    grid-template-columns: 1fr;
-  }
-
-  .methodology-sources {
-    grid-column: 1;
-  }
 }
 
 @media (max-width: 720px) {

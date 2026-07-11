@@ -477,94 +477,6 @@ function TopAirportsPanel({
   );
 }
 
-function MethodologyPanel() {
-  const notes = [
-    {
-      title: "Table criteria",
-      text:
-        "The rate row counts scheduled HKIA movements matching the selected direction and flight type in each one-hour bucket. Region rows are point-in-time snapshots of all matching active flights at T(now) and each +N forecast time."
-    },
-    {
-      title: "Priority airport",
-      text:
-        "HKG plus mapped route airports ranked by selected-window flight count; the first 72 are queried for METAR and the first 45 for TAF."
-    },
-    {
-      title: "TAF",
-      text:
-        "The TAF row uses only AviationWeather forecast periods that overlap each hour. The reported-weather row may include the current METAR at T(now); future columns use applicable TAF periods only."
-    },
-    {
-      title: "Weather categories",
-      text:
-        "NO DATA means no usable report. NO REPORTED WX means a structured report exists without a weather group, or explicitly contains NSW. REPORTED WX means the source wxString contains one or more weather codes. These are data states, not severity ratings."
-    },
-    {
-      title: "Official weather codes",
-      text:
-        "HKO defines - as light, + as heavy, VC as vicinity, and codes such as TS (thunderstorms), RA (rain), DZ (drizzle), BR (mist), FG (fog), and HZ (haze). The dashboard displays the exact source code and does not assign a custom severity."
-    },
-    {
-      title: "No invented minima",
-      text:
-        "Wind, gust, visibility, and cloud values are source observations or forecasts. They are not converted into a flight-impact level because runway, aircraft, operator, and official warning criteria are not present in this dataset."
-    },
-    {
-      title: "Flight status",
-      text:
-        "Estimated duration = max(1h, great-circle distance / 820 km/h + 0.55h). Within 100km counts every flight estimated airborne and no more than 100km from Hong Kong at that forecast time."
-    },
-    {
-      title: "On ground",
-      text:
-        "For arrivals, on ground means still at the origin airport. For departures, on ground means still at HKIA before scheduled departure."
-    },
-    {
-      title: "Greater China",
-      text: "Greater China includes mainland China, Hong Kong, Macau, and Taiwan."
-    },
-    {
-      title: "Source weather matches",
-      text:
-        "Cards include selected flights that are active now or scheduled within 30 hours and overlap a route-airport REPORTED WX period. They are sorted by scheduled time; no severity order is inferred."
-    },
-    {
-      title: "Missing data",
-      text:
-        "Missing airport, distance, METAR, or TAF data is shown as Unknown or NO DATA and reported in the warning banner; it is never treated as no reported weather."
-    }
-  ];
-
-  return (
-    <section className="methodology-panel">
-      <div>
-        <p className="eyebrow">Methodology</p>
-        <h2>How The Wallace Table Is Generated</h2>
-      </div>
-      <div className="methodology-grid">
-        {notes.map((note) => (
-          <article key={note.title}>
-            <strong>{note.title}</strong>
-            <p>{note.text}</p>
-          </article>
-        ))}
-      </div>
-      <div className="methodology-sources">
-        <strong>Official references</strong>
-        <a href="https://www.hko.gov.hk/en/aviat/decode_metar.htm" target="_blank" rel="noreferrer">
-          HKO METAR/SPECI decoding
-        </a>
-        <a href="https://www.hko.gov.hk/en/aviat/decode_taf.htm" target="_blank" rel="noreferrer">
-          HKO TAF decoding
-        </a>
-        <a href="https://aviationweather.gov/data/api/" target="_blank" rel="noreferrer">
-          AviationWeather Data API
-        </a>
-      </div>
-    </section>
-  );
-}
-
 function HorizonCards({ data, direction }: { data: DashboardData; direction: DirectionFilter }) {
   return (
     <section className="horizon-grid">
@@ -803,7 +715,6 @@ export default function DashboardClient() {
           <ArrivalRateChart data={data} direction={direction} />
           <SummaryStrip data={data} direction={direction} />
           <TopAirportsPanel data={data} direction={direction} />
-          <MethodologyPanel />
           <OperationsTable data={data} direction={direction} />
           <OperationalConcerns data={data} />
           <HorizonCards data={data} direction={direction} />
