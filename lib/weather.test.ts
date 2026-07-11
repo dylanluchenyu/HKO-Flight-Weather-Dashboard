@@ -1,55 +1,134 @@
 import { describe, expect, it } from "vitest";
-import { classifyWeatherRisk } from "./weather";
+import { normalizeAirportWeather, tafWeatherAt } from "./weather";
 
-describe("weather risk classification", () => {
-  it("flags thunderstorm reports as severe", () => {
-    const risk = classifyWeatherRisk({
+describe("source-backed METAR/TAF weather categories", () => {
+  it("reports the exact structured thunderstorm code without assigning severity", () => {
+    const weather = normalizeAirportWeather({
       airportIata: "HKG",
       airportIcao: "VHHH",
       metar: {
         icaoId: "VHHH",
+        metarType: "METAR",
         rawOb: "VHHH 290800Z 09012KT 4000 TSRA BKN012 28/24 Q1006",
-        wxString: "TSRA",
-        clouds: [{ cover: "BKN", base: 1200 }]
+        wxString: "TSRA"
       }
     });
 
-    expect(risk.level).toBe("severe");
-    expect(risk.reasons).toContain("Weather code TS");
+    expect(weather.category).toBe("reported");
+    expect(weather.weatherCodes).toEqual(["TSRA"]);
+    expect(weather.reasons[0]).toContain("thunderstorms (TS)");
+    expect(weather.reasons[0]).toContain("rain (RA)");
+    expect(weather.metar?.reportType).toBe("METAR");
   });
 
-  it("flags low ceiling and strong gusts as significant", () => {
-    const risk = classifyWeatherRisk({
+  it("does not turn wind, visibility, or cloud values into an invented impact level", () => {
+    const weather = normalizeAirportWeather({
       airportIata: "NRT",
       airportIcao: "RJAA",
       metar: {
         icaoId: "RJAA",
         rawOb: "RJAA 290800Z 18020G38KT 9999 BKN006 21/19 Q1009",
-        wgst: 38,
-        visib: "10+",
-        clouds: [{ cover: "BKN", base: 600 }]
+        wxString: null
       }
     });
 
-    expect(risk.level).toBe("significant");
-    expect(risk.reasons).toEqual(
-      expect.arrayContaining(["Wind/gust 38 kt", "Ceiling 600 ft"])
-    );
+    expect(weather.category).toBe("none");
+    expect(weather.label).toBe("NO REPORTED WX");
   });
 
-  it("flags TAF hazard and gust criteria without a METAR", () => {
-    const risk = classifyWeatherRisk({
+  it("preserves TAF change type, probability, validity, and reported code", () => {
+    const weather = normalizeAirportWeather({
       airportIata: "TPE",
       airportIcao: "RCTP",
       taf: {
         icaoId: "RCTP",
-        rawTAF: "TAF RCTP 290500Z 2906/3012 09012G38KT 4000 TSRA BKN012"
+        rawTAF: "TAF RCTP 290500Z 2906/3012 PROB30 TEMPO 4000 +SHRA",
+        fcsts: [
+          {
+            timeFrom: "2026-06-29T06:00:00.000Z",
+            timeTo: "2026-06-29T08:00:00.000Z",
+            fcstChange: "TEMPO",
+            probability: 30,
+            wxString: "+SHRA"
+          }
+        ]
       }
     });
 
-    expect(risk.level).toBe("severe");
-    expect(risk.reasons).toEqual(
-      expect.arrayContaining(["Weather code TS", "TAF gust 38 kt"])
+    expect(weather.category).toBe("reported");
+    expect(weather.tafPeriods[0]).toMatchObject({
+      category: "reported",
+      probability: 30,
+      changeIndicator: "TEMPO",
+      weatherCodes: ["+SHRA"]
+    });
+    expect(weather.tafPeriods[0].reasons).toEqual(
+      expect.arrayContaining([expect.stringContaining("heavy (+)"), "TEMPO", "PROB30"])
     );
+  });
+
+  it("never scans airport identifiers or raw control words as weather codes", () => {
+    for (const [icaoId, rawOb] of [
+      ["WSSS", "METAR WSSS 290800Z 17012KT CAVOK"],
+      ["ZSFZ", "METAR ZSFZ 290800Z 28006MPS 9999"],
+      ["KLAX", "SPECI KLAX 290800Z 27010KT 10SM SCT020"]
+    ]) {
+      const weather = normalizeAirportWeather({
+        airportIata: "TST",
+        airportIcao: icaoId,
+        metar: { icaoId, rawOb, wxString: null },
+        taf: {
+          icaoId,
+          rawTAF: `TAF ${icaoId} 290500Z 2906/3012 CAVOK TEMPO NSW RMK NXT FCST`,
+          fcsts: [
+            {
+              timeFrom: "2026-06-29T06:00:00.000Z",
+              timeTo: "2026-06-29T08:00:00.000Z",
+              wxString: "NSW"
+            }
+          ]
+        }
+      });
+      expect(weather.category).toBe("none");
+    }
+  });
+
+  it("applies a TAF weather code only to overlapping forecast hours", () => {
+    const weather = normalizeAirportWeather({
+      airportIata: "HKG",
+      airportIcao: "VHHH",
+      taf: {
+        icaoId: "VHHH",
+        rawTAF: "TAF VHHH",
+        fcsts: [
+          {
+            timeFrom: "2026-06-29T06:00:00.000Z",
+            timeTo: "2026-06-29T08:00:00.000Z",
+            wxString: "FG"
+          }
+        ]
+      }
+    });
+
+    expect(
+      tafWeatherAt(
+        weather,
+        new Date("2026-06-29T06:30:00.000Z"),
+        new Date("2026-06-29T07:30:00.000Z")
+      ).category
+    ).toBe("reported");
+    expect(
+      tafWeatherAt(
+        weather,
+        new Date("2026-06-29T08:00:00.000Z"),
+        new Date("2026-06-29T09:00:00.000Z")
+      ).category
+    ).toBe("unknown");
+  });
+
+  it("reports missing METAR and TAF as NO DATA", () => {
+    const weather = normalizeAirportWeather({ airportIata: "ZZZ", airportIcao: "ZZZZ" });
+    expect(weather.category).toBe("unknown");
+    expect(weather.label).toBe("NO DATA");
   });
 });

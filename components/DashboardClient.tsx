@@ -1,13 +1,17 @@
 "use client";
 
-import { startTransition, useEffect, useState } from "react";
+import { startTransition, useEffect, useRef, useState } from "react";
 import type {
+  AirportWeather,
+  DashboardError,
   DashboardData,
   HorizonAirportSummary,
+  NormalizedFlight,
   Region,
   TableRow,
   TrafficType,
-  WeatherRiskLevel
+  WeatherAssessment,
+  WeatherCategory
 } from "@/lib/types";
 
 const REFRESH_MS = 30 * 60 * 1000;
@@ -25,7 +29,7 @@ const REGION_ORDER: Array<Region | "Other"> = [
   "Other"
 ];
 
-function formatDateTime(value?: string): string {
+function formatDateTime(value?: string | null): string {
   if (!value) {
     return "Not available";
   }
@@ -39,7 +43,7 @@ function formatDateTime(value?: string): string {
   }).format(new Date(value));
 }
 
-function formatClock(value?: string): string {
+function formatClock(value?: string | null): string {
   if (!value) {
     return "--:--";
   }
@@ -51,7 +55,7 @@ function formatClock(value?: string): string {
   }).format(new Date(value));
 }
 
-function formatUtcClock(value?: string): string {
+function formatUtcClock(value?: string | null): string {
   if (!value) {
     return "--:--Z";
   }
@@ -63,21 +67,24 @@ function formatUtcClock(value?: string): string {
   }).format(new Date(value))}Z`;
 }
 
-function riskClass(level?: WeatherRiskLevel): string {
-  return `risk-${level ?? "nil"}`;
+function weatherClass(category?: WeatherCategory): string {
+  return `weather-${category ?? "unknown"}`;
 }
 
 function statusLabel(status?: string): string {
   if (status === "enRoute") {
     return "en route";
   }
-  if (status === "onLand") {
+  if (status === "onGround") {
     return "on ground";
   }
   if (status === "within100km") {
     return "within 100km of HK";
   }
-  return "unknown";
+  if (status === "completed") {
+    return "completed";
+  }
+  return "status unavailable";
 }
 
 function directionTitle(direction: DirectionFilter): string {
@@ -141,8 +148,14 @@ function SummaryList({ items }: { items: HorizonAirportSummary[] }) {
             <span>{item.airport?.city ?? "Mapping needed"}</span>
           </div>
           <div className="summary-count">{item.count}</div>
-          <div className={`risk-pill ${riskClass(item.weather?.level)}`}>
-            {item.weather?.label ?? "NO METAR"}
+          <div className={`weather-pill ${weatherClass(item.weather?.category)}`}>
+            {item.weather
+              ? `${item.weather.label}${
+                  item.weather.category === "reported" && item.weather.weatherCodes[0]
+                    ? ` ${item.weather.weatherCodes[0]}`
+                    : ""
+                }`
+              : "NO DATA"}
           </div>
         </div>
       ))}
@@ -160,9 +173,9 @@ function CellValue({
   index: number;
 }) {
   const isNumber = typeof value === "number";
-  const severity = row.severity?.[index];
+  const weatherCategory = row.weatherCategory?.[index];
   return (
-    <span className={isNumber ? "number-cell" : `weather-cell ${riskClass(severity)}`}>
+    <span className={isNumber ? "number-cell" : `weather-cell ${weatherClass(weatherCategory)}`}>
       {value}
     </span>
   );
@@ -202,8 +215,13 @@ function OperationsTable({
             </tr>
           </thead>
           <tbody>
-            {data.hourlyArrivalTable.map((row) => (
-              <tr key={row.id} className={row.region ? "region-row" : "metric-row"}>
+            {data.hourlyArrivalTable.map((row, rowIndex) => {
+              const previousRegion = data.hourlyArrivalTable[rowIndex - 1]?.region;
+              const className = row.region
+                ? `region-row${row.region !== previousRegion ? " region-start" : ""}`
+                : "metric-row";
+              return (
+              <tr key={row.id} className={className}>
                 <th className="row-label">
                   {row.label}
                   {row.status ? <small>{statusLabel(row.status)}</small> : null}
@@ -214,7 +232,8 @@ function OperationsTable({
                   </td>
                 ))}
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -275,12 +294,12 @@ function DashboardFilters({
           disabled={disabled}
           onChange={(event) => onHorizonChange(Number(event.target.value) as HorizonFilter)}
         >
-          <option value={6}>Next 6h</option>
-          <option value={12}>Next 12h</option>
+          <option value={6}>T(now) to +6</option>
+          <option value={12}>T(now) to +12</option>
           <option value={15}>T(now) to +15</option>
-          <option value={18}>Next 18h</option>
-          <option value={24}>Next 24h</option>
-          <option value={30}>Next 30h</option>
+          <option value={18}>T(now) to +18</option>
+          <option value={24}>T(now) to +24</option>
+          <option value={30}>T(now) to +30</option>
         </select>
       </div>
     </section>
@@ -310,12 +329,24 @@ function SummaryStrip({
     { value: 0, index: 0 }
   );
   const enRoute = data.flights.filter(
-    (flight) => (flight.flightStatus ?? flight.arrivalStatus) === "enRoute"
+    (flight) => flight.statusNow === "enRoute"
   ).length;
   const within100km = data.flights.filter(
-    (flight) => (flight.flightStatus ?? flight.arrivalStatus) === "within100km"
+    (flight) => flight.statusNow === "within100km"
   ).length;
-  const weatherHits = data.weather.filter((risk) => risk.level !== "nil").length;
+  const rangeStart = new Date(data.hours[0]?.startsAt ?? data.generatedAt);
+  const rangeEnd = new Date(data.hours.at(-1)?.endsAt ?? data.generatedAt);
+  const weatherHits = data.weather.filter((weather) => {
+    const metarHit =
+      weather.metar?.category === "reported";
+    const tafHit = weather.tafPeriods.some(
+      (period) =>
+        new Date(period.startsAt) < rangeEnd &&
+        new Date(period.endsAt) > rangeStart &&
+        period.category === "reported"
+    );
+    return metarHit || tafHit;
+  }).length;
 
   return (
     <section className="summary">
@@ -337,7 +368,7 @@ function SummaryStrip({
       </div>
       <div className="summary-card">
         <div className="value">{weatherHits}</div>
-        <div className="label">Priority airports with bad weather</div>
+        <div className="label">Priority airports with reported weather</div>
       </div>
     </section>
   );
@@ -381,41 +412,56 @@ function ArrivalRateChart({
   );
 }
 
-function TopAirportsPanel({ data }: { data: DashboardData }) {
-  const latest = data.horizons.find((horizon) => horizon.hours === 30) ?? data.horizons.at(-1);
-  const combined = new Map<string, HorizonAirportSummary>();
-  for (const item of [
-    ...(latest?.arrivalOrigins ?? []),
-    ...(latest?.departureDestinations ?? [])
-  ]) {
-    const existing = combined.get(item.airportIata);
-    combined.set(item.airportIata, {
-      ...item,
-      count: (existing?.count ?? 0) + item.count,
-      weather: item.weather ?? existing?.weather
+function TopAirportsPanel({
+  data,
+  direction
+}: {
+  data: DashboardData;
+  direction: DirectionFilter;
+}) {
+  const startsAt = new Date(data.generatedAt);
+  const endsAt = new Date(startsAt.getTime() + 30 * 60 * 60 * 1000);
+  const counts = new Map<string, HorizonAirportSummary>();
+  for (const flight of data.flights) {
+    const scheduled = new Date(flight.scheduledTime);
+    if (scheduled < startsAt || scheduled >= endsAt) {
+      continue;
+    }
+    const existing = counts.get(flight.routeAirportIata);
+    counts.set(flight.routeAirportIata, {
+      airportIata: flight.routeAirportIata,
+      airport: flight.routeAirport,
+      count: (existing?.count ?? 0) + 1,
+      weather: existing?.weather ?? null
     });
   }
-
-  const grouped = [...combined.values()]
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 30)
-    .reduce<Record<string, HorizonAirportSummary[]>>((acc, item) => {
-      const region: Region | "Other" = item.airport?.region ?? "Other";
+  const grouped = [...counts.values()].reduce<Record<string, HorizonAirportSummary[]>>(
+    (acc, item) => {
+      const region: Region = item.airport?.region ?? "Other";
       acc[region] = [...(acc[region] ?? []), item];
       return acc;
-    }, {});
-  const orderedGroups = REGION_ORDER.flatMap((region) =>
-    grouped[region]?.length ? [[region, grouped[region]] as const] : []
+    },
+    {}
   );
+  const scope =
+    direction === "arrival"
+      ? "arrival origins"
+      : direction === "departure"
+        ? "departure destinations"
+        : "arrival origins + departure destinations";
 
   return (
     <section className="top30-list">
-      <h3>Top airports to watch for weather · next 30h</h3>
-      {orderedGroups.map(([region, items]) => (
+      <h3>Top {scope} by region · next 30h</h3>
+      {REGION_ORDER.map((region) => {
+        const items = (grouped[region] ?? []).sort((a, b) => b.count - a.count).slice(0, 5);
+        return (
         <div className="region-group" key={region}>
           <div className="region-header">{region}</div>
           <div className="region-items">
-            {items.map((item, index) => (
+            {items.length === 0 ? (
+              <span className="empty">No flights in this window.</span>
+            ) : items.map((item, index) => (
               <span key={item.airportIata}>
                 <b className="rank">#{index + 1}</b>
                 <b className="code">{item.airportIata}</b>
@@ -425,7 +471,8 @@ function TopAirportsPanel({ data }: { data: DashboardData }) {
             ))}
           </div>
         </div>
-      ))}
+        );
+      })}
     </section>
   );
 }
@@ -435,27 +482,37 @@ function MethodologyPanel() {
     {
       title: "Table criteria",
       text:
-        "Rows include scheduled HKIA flights matching the selected direction and flight type, grouped by one-hour buckets from T(now)."
+        "The rate row counts scheduled HKIA movements matching the selected direction and flight type in each one-hour bucket. Region rows are point-in-time snapshots of all matching active flights at T(now) and each +N forecast time."
     },
     {
       title: "Priority airport",
       text:
-        "HKG plus route airports ranked by flight count; the busiest mapped airports are queried first for METAR and TAF to keep refresh fast."
+        "HKG plus mapped route airports ranked by selected-window flight count; the first 72 are queried for METAR and the first 45 for TAF."
     },
     {
       title: "TAF",
       text:
-        "The TAF row is forecast-only. The bad-weather row combines METAR observations, available TAF, and affected route airports."
+        "The TAF row uses only AviationWeather forecast periods that overlap each hour. The reported-weather row may include the current METAR at T(now); future columns use applicable TAF periods only."
     },
     {
-      title: "Severity",
+      title: "Weather categories",
       text:
-        "Significant means wind or gust at least 35 kt, visibility below 0.62 SM, ceiling below 1000 ft, or listed hazard weather codes. Severe includes TS, FZ, SQ, FC, VA, SS, and DS."
+        "NO DATA means no usable report. NO REPORTED WX means a structured report exists without a weather group, or explicitly contains NSW. REPORTED WX means the source wxString contains one or more weather codes. These are data states, not severity ratings."
+    },
+    {
+      title: "Official weather codes",
+      text:
+        "HKO defines - as light, + as heavy, VC as vicinity, and codes such as TS (thunderstorms), RA (rain), DZ (drizzle), BR (mist), FG (fog), and HZ (haze). The dashboard displays the exact source code and does not assign a custom severity."
+    },
+    {
+      title: "No invented minima",
+      text:
+        "Wind, gust, visibility, and cloud values are source observations or forecasts. They are not converted into a flight-impact level because runway, aircraft, operator, and official warning criteria are not present in this dataset."
     },
     {
       title: "Flight status",
       text:
-        "En route and within 100km are estimates from schedule, distance, and 820 km/h cruise speed; within 100km only counts flights already estimated airborne near Hong Kong."
+        "Estimated duration = max(1h, great-circle distance / 820 km/h + 0.55h). Within 100km counts every flight estimated airborne and no more than 100km from Hong Kong at that forecast time."
     },
     {
       title: "On ground",
@@ -465,6 +522,16 @@ function MethodologyPanel() {
     {
       title: "Greater China",
       text: "Greater China includes mainland China, Hong Kong, Macau, and Taiwan."
+    },
+    {
+      title: "Source weather matches",
+      text:
+        "Cards include selected flights that are active now or scheduled within 30 hours and overlap a route-airport REPORTED WX period. They are sorted by scheduled time; no severity order is inferred."
+    },
+    {
+      title: "Missing data",
+      text:
+        "Missing airport, distance, METAR, or TAF data is shown as Unknown or NO DATA and reported in the warning banner; it is never treated as no reported weather."
     }
   ];
 
@@ -482,11 +549,23 @@ function MethodologyPanel() {
           </article>
         ))}
       </div>
+      <div className="methodology-sources">
+        <strong>Official references</strong>
+        <a href="https://www.hko.gov.hk/en/aviat/decode_metar.htm" target="_blank" rel="noreferrer">
+          HKO METAR/SPECI decoding
+        </a>
+        <a href="https://www.hko.gov.hk/en/aviat/decode_taf.htm" target="_blank" rel="noreferrer">
+          HKO TAF decoding
+        </a>
+        <a href="https://aviationweather.gov/data/api/" target="_blank" rel="noreferrer">
+          AviationWeather Data API
+        </a>
+      </div>
     </section>
   );
 }
 
-function HorizonCards({ data }: { data: DashboardData }) {
+function HorizonCards({ data, direction }: { data: DashboardData; direction: DirectionFilter }) {
   return (
     <section className="horizon-grid">
       {data.horizons.map((horizon) => (
@@ -495,41 +574,101 @@ function HorizonCards({ data }: { data: DashboardData }) {
             <span>Next</span>
             <strong>{horizon.hours}h</strong>
           </div>
-          <h3>Arrival origins</h3>
-          <SummaryList items={horizon.arrivalOrigins} />
-          <h3>Departure destinations</h3>
-          <SummaryList items={horizon.departureDestinations} />
-          <h3>Bad-weather matches</h3>
-          <SummaryList items={horizon.badWeatherAirports} />
+          {direction !== "departure" ? (
+            <>
+              <h3>Arrival origins</h3>
+              <SummaryList items={horizon.arrivalOrigins} />
+            </>
+          ) : null}
+          {direction !== "arrival" ? (
+            <>
+              <h3>Departure destinations</h3>
+              <SummaryList items={horizon.departureDestinations} />
+            </>
+          ) : null}
+          <h3>Reported-weather matches</h3>
+          <SummaryList items={horizon.reportedWeatherAirports} />
         </article>
       ))}
     </section>
   );
 }
 
+function weatherAtFlightTime(
+  weather: AirportWeather,
+  flight: NormalizedFlight,
+  generatedAt: Date
+): WeatherAssessment {
+  const scheduled = new Date(flight.scheduledTime);
+  const at = scheduled < generatedAt ? generatedAt : scheduled;
+  const endsAt = new Date(at.getTime() + 60 * 60 * 1000);
+  const assessments: WeatherAssessment[] = weather.tafPeriods.filter(
+    (period) => new Date(period.startsAt) < endsAt && new Date(period.endsAt) > at
+  );
+  if (at.getTime() - generatedAt.getTime() < 60 * 60 * 1000 && weather.metar) {
+    assessments.push(weather.metar);
+  }
+  const reported = assessments.filter((assessment) => assessment.category === "reported");
+  if (reported.length > 0) {
+    return {
+      category: "reported",
+      label: "REPORTED WX",
+      reasons: [...new Set(reported.flatMap((assessment) => assessment.reasons))],
+      weatherCodes: [...new Set(reported.flatMap((assessment) => assessment.weatherCodes))]
+    };
+  }
+  const available = assessments.find((assessment) => assessment.category === "none");
+  return available ?? {
+    category: "unknown",
+    label: "NO DATA",
+    reasons: ["Weather data unavailable"],
+    weatherCodes: []
+  };
+}
+
 function OperationalConcerns({ data }: { data: DashboardData }) {
-  const riskByAirport = new Map(data.weather.map((risk) => [risk.airportIata, risk]));
+  const weatherByAirport = new Map(data.weather.map((weather) => [weather.airportIata, weather]));
+  const generatedAt = new Date(data.generatedAt);
+  const concernEnd = new Date(generatedAt.getTime() + 30 * 60 * 60 * 1000);
   const concerns = data.flights
-    .filter((flight) => {
-      const risk = riskByAirport.get(flight.routeAirportIata);
-      return risk && risk.level !== "nil";
+    .flatMap((flight) => {
+      const scheduled = new Date(flight.scheduledTime);
+      const activeNow = flight.statusNow === "enRoute" || flight.statusNow === "within100km";
+      if (!activeNow && (scheduled < generatedAt || scheduled >= concernEnd)) {
+        return [];
+      }
+      const weather = weatherByAirport.get(flight.routeAirportIata);
+      if (!weather) {
+        return [];
+      }
+      const assessment = weatherAtFlightTime(weather, flight, generatedAt);
+      return assessment.category === "reported"
+        ? [{ flight, assessment }]
+        : [];
     })
+    .sort(
+      (a, b) =>
+        new Date(a.flight.scheduledTime).getTime() - new Date(b.flight.scheduledTime).getTime()
+    )
     .slice(0, 12);
 
   return (
     <section className="panel concerns-panel">
       <div className="section-heading">
         <div>
-          <p className="eyebrow">Operational concern</p>
-          <h2>Flights Matched With Bad Weather</h2>
+          <p className="eyebrow">Source weather match</p>
+          <h2>Flights Matched With Reported Weather</h2>
+          <p className="section-description">
+            Active or next-30h flights whose route-airport METAR/TAF contains a weather code.
+            This is not a severity or operational-impact rating.
+          </p>
         </div>
       </div>
       {concerns.length === 0 ? (
-        <p className="empty">No bad-weather airport matches in the current 30-hour window.</p>
+        <p className="empty">No reported-weather airport matches in the current 30-hour window.</p>
       ) : (
         <div className="concern-list">
-          {concerns.map((flight) => {
-            const risk = riskByAirport.get(flight.routeAirportIata);
+          {concerns.map(({ flight, assessment }) => {
             return (
               <div className="concern-item" key={flight.id}>
                 <div>
@@ -539,10 +678,10 @@ function OperationalConcerns({ data }: { data: DashboardData }) {
                     {flight.routeAirportIata} at {formatClock(flight.scheduledTime)}
                   </span>
                 </div>
-                <div className={`risk-pill ${riskClass(risk?.level)}`}>
-                  {risk?.label ?? "Risk"}
+                <div className={`weather-pill ${weatherClass(assessment.category)}`}>
+                  {assessment.label}
                 </div>
-                <p>{risk?.reasons.slice(0, 2).join(", ")}</p>
+                <p>{assessment.reasons.slice(0, 3).join(", ")}</p>
               </div>
             );
           })}
@@ -560,9 +699,12 @@ export default function DashboardClient() {
   const [direction, setDirection] = useState<DirectionFilter>("both");
   const [traffic, setTraffic] = useState<TrafficFilter>("both");
   const [horizon, setHorizon] = useState<HorizonFilter>(15);
+  const requestSequence = useRef(0);
 
   async function loadDashboard(force = false) {
+    const requestId = ++requestSequence.current;
     setError(null);
+    setLoading(true);
     setRefreshing(force);
     try {
       const response = await fetch(
@@ -570,18 +712,27 @@ export default function DashboardClient() {
         { cache: "no-store" }
       );
       if (!response.ok) {
-        throw new Error(`Dashboard API ${response.status}`);
+        const body = (await response.json().catch(() => null)) as DashboardError | null;
+        throw new Error(body?.error ?? `Dashboard API ${response.status}`);
       }
       const nextData = (await response.json()) as DashboardData;
+      if (requestId !== requestSequence.current) {
+        return;
+      }
       startTransition(() => {
         setData(nextData);
         setLoading(false);
       });
     } catch (loadError) {
+      if (requestId !== requestSequence.current) {
+        return;
+      }
       setError(String(loadError));
       setLoading(false);
     } finally {
-      setRefreshing(false);
+      if (requestId === requestSequence.current) {
+        setRefreshing(false);
+      }
     }
   }
 
@@ -628,6 +779,15 @@ export default function DashboardClient() {
       </section>
 
       {error ? <div className="notice error-notice">{error}</div> : null}
+      {loading && data ? <div className="notice loading-notice">Updating filtered data...</div> : null}
+      {data?.warnings.length ? (
+        <div className="notice warning-notice" role="status">
+          <strong>Data quality notices</strong>
+          {data.warnings.map((warning) => (
+            <span key={warning}>{warning}</span>
+          ))}
+        </div>
+      ) : null}
 
       {data ? (
         <>
@@ -642,11 +802,11 @@ export default function DashboardClient() {
           />
           <ArrivalRateChart data={data} direction={direction} />
           <SummaryStrip data={data} direction={direction} />
-          <TopAirportsPanel data={data} />
+          <TopAirportsPanel data={data} direction={direction} />
           <MethodologyPanel />
           <OperationsTable data={data} direction={direction} />
           <OperationalConcerns data={data} />
-          <HorizonCards data={data} />
+          <HorizonCards data={data} direction={direction} />
         </>
       ) : null}
     </main>

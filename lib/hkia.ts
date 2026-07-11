@@ -1,9 +1,9 @@
 import { getAirport } from "./airports";
 import { distanceKm, greatCircleRoute, HKG_AIRPORT } from "./geo";
+import { estimateFlightPhase } from "./flightPhase";
 import { addDays, getHongKongDateString, parseHkiaDateTime } from "./time";
 import type {
   FlightDirection,
-  FlightStatus,
   NormalizedFlight,
   TrafficType
 } from "./types";
@@ -30,47 +30,6 @@ interface HkiaFlightDay {
 
 const HKIA_FLIGHTS_URL =
   "https://www.hongkongairport.com/flightinfo-rest/rest/flights";
-const CRUISE_SPEED_KMH = 820;
-const AIRBORNE_BUFFER_HOURS = 0.55;
-
-function estimateFlightStatus(
-  now: Date,
-  scheduledTime: Date,
-  distance: number,
-  direction: FlightDirection
-): FlightStatus {
-  const flightHours = Math.max(1, distance / CRUISE_SPEED_KMH + AIRBORNE_BUFFER_HOURS);
-
-  if (direction === "departure") {
-    if (now < scheduledTime) {
-      return "onLand";
-    }
-
-    const elapsedHours = (now.getTime() - scheduledTime.getTime()) / (60 * 60 * 1000);
-    const distanceFromHongKong = Math.max(
-      0,
-      Math.min(distance, elapsedHours * CRUISE_SPEED_KMH)
-    );
-
-    if (distanceFromHongKong <= 100) {
-      return "within100km";
-    }
-    return elapsedHours <= flightHours ? "enRoute" : "onLand";
-  }
-
-  const estimatedDeparture = new Date(scheduledTime.getTime() - flightHours * 60 * 60 * 1000);
-  if (now < estimatedDeparture) {
-    return "onLand";
-  }
-
-  const remainingHours = (scheduledTime.getTime() - now.getTime()) / (60 * 60 * 1000);
-  const remainingDistance = Math.max(0, Math.min(distance, remainingHours * CRUISE_SPEED_KMH));
-  if (remainingDistance <= 100) {
-    return "within100km";
-  }
-
-  return "enRoute";
-}
 
 async function fetchHkiaJson(
   date: string,
@@ -132,10 +91,13 @@ function normalizeItem(args: {
       : airport
         ? greatCircleRoute(HKG_AIRPORT, airport)
         : [];
-  const routeDistance = airport ? distanceKm(airport, HKG_AIRPORT) : undefined;
-  const flightStatus = routeDistance
-    ? estimateFlightStatus(args.now, scheduled, routeDistance, args.direction)
-    : undefined;
+  const routeDistance = airport ? distanceKm(airport, HKG_AIRPORT) : null;
+  const statusNow = estimateFlightPhase({
+    at: args.now,
+    scheduledTime: scheduled,
+    distanceKm: routeDistance,
+    direction: args.direction
+  });
   const flightNumbers = args.item.flight?.map((flight) => flight.no ?? "").filter(Boolean) ?? [];
   const airlineCodes =
     args.item.flight?.map((flight) => flight.airline ?? "").filter(Boolean) ?? [];
@@ -154,12 +116,11 @@ function normalizeItem(args: {
     direction: args.direction,
     trafficType: args.trafficType,
     routeAirportIata,
-    routeAirport: airport,
+    routeAirport: airport ?? null,
     region: airport?.region ?? "Other",
-    statusText: args.item.status,
-    statusCode: args.item.statusCode,
-    arrivalStatus: args.direction === "arrival" ? flightStatus : undefined,
-    flightStatus,
+    statusText: args.item.status ?? null,
+    statusCode: args.item.statusCode ?? null,
+    statusNow,
     distanceKm: routeDistance,
     route
   };
@@ -170,12 +131,12 @@ export async function fetchHkiaFlights(args: {
   trafficTypes: TrafficType[];
   now: Date;
   warnings: string[];
-}): Promise<{ flights: NormalizedFlight[]; sourceUpdatedAt?: string }> {
+}): Promise<{ flights: NormalizedFlight[]; sourceUpdatedAt: string | null }> {
   const today = getHongKongDateString(args.now);
-  const dates = [today, addDays(today, 1), addDays(today, 2)];
+  const dates = [addDays(today, -1), today, addDays(today, 1), addDays(today, 2)];
   const seen = new Set<string>();
   const flights: NormalizedFlight[] = [];
-  let sourceUpdatedAt: string | undefined;
+  let sourceUpdatedAt: string | null = null;
   const jobs = args.directions.flatMap((direction) =>
     args.trafficTypes.flatMap((trafficType) =>
       dates.map(async (date) => {

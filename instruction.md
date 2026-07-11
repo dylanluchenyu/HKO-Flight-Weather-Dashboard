@@ -29,10 +29,18 @@ This document converts the reviewer comments from `high-resolution wind forecast
 ## Definitions To Standardize
 
 1. Define the criteria for a `priority airport`.
-2. Define the thresholds or rules behind weather severity labels such as `significant` and `severe`.
+2. Do not invent dashboard thresholds for `significant` or `severe`. METAR and
+   TAF provide observations, forecasts, weather codes, change groups, and
+   probabilities but no universal impact level. Replace those labels with the
+   source-backed data states `NO DATA`, `NO REPORTED WX`, and `REPORTED WX`, and
+   display the exact HKO/TAF weather code and valid period.
 3. Confirm and document whether `Greater China` includes mainland China, Hong Kong, Macau, and Taiwan.
 
 ## Notes
 
 1. Repeated reviewer questions about `priority airport` indicate that this definition should be visible in the UI or documentation, not only implicit in the code.
 2. The original comments included positive feedback on the existing function, so the goal is to refine and clarify the dashboard rather than redesign it from scratch.
+3. Wind, visibility, ceiling, and weather codes must not be converted into a
+   custom flight-impact severity unless a named official warning/minima source is
+   added to the data model. SIGMET is a separate aviation-warning product and is
+   not inferred from METAR/TAF.

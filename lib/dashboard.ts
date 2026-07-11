@@ -1,32 +1,33 @@
 import { fetchAirportFallbacks } from "./airportFallback";
 import { REGIONS } from "./airports";
+import { estimateFlightPhase, FLIGHT_LOOKBACK_HOURS } from "./flightPhase";
 import { distanceKm, greatCircleRoute, HKG_AIRPORT } from "./geo";
 import { fetchHkiaFlights } from "./hkia";
 import { addHours, addMinutes, buildHourlyBuckets } from "./time";
 import {
-  classifyWeatherRisk,
-  describeRisk,
+  describeWeatherCategory,
   fetchWeatherForAirports,
-  highestRisk
+  mergeWeatherCategory,
+  tafWeatherAt,
+  weatherAt
 } from "./weather";
 import type {
   AirportMetadata,
+  AirportWeather,
   DashboardData,
   DashboardOptions,
   FlightDirection,
-  FlightStatus,
+  FlightPhase,
   HorizonAirportSummary,
   HorizonSummary,
   NormalizedFlight,
   TableRow,
   TrafficType,
-  WeatherRisk,
-  WeatherRiskLevel
+  WeatherAssessment,
+  WeatherCategory
 } from "./types";
 
 const CACHE_MINUTES = 30;
-const CRUISE_SPEED_KMH = 820;
-const AIRBORNE_BUFFER_HOURS = 0.55;
 const DEFAULT_OPTIONS: DashboardOptions = {
   direction: "both",
   traffic: "both",
@@ -55,45 +56,6 @@ function inWindow(flight: NormalizedFlight, start: Date, end: Date): boolean {
   return time >= start && time < end;
 }
 
-function estimateFlightStatus(
-  now: Date,
-  scheduledTime: Date,
-  distance: number,
-  direction: FlightDirection
-): FlightStatus {
-  const flightHours = Math.max(1, distance / CRUISE_SPEED_KMH + AIRBORNE_BUFFER_HOURS);
-
-  if (direction === "departure") {
-    if (now < scheduledTime) {
-      return "onLand";
-    }
-
-    const elapsedHours = (now.getTime() - scheduledTime.getTime()) / (60 * 60 * 1000);
-    const distanceFromHongKong = Math.max(
-      0,
-      Math.min(distance, elapsedHours * CRUISE_SPEED_KMH)
-    );
-
-    if (distanceFromHongKong <= 100) {
-      return "within100km";
-    }
-    return elapsedHours <= flightHours ? "enRoute" : "onLand";
-  }
-
-  const estimatedDeparture = new Date(scheduledTime.getTime() - flightHours * 60 * 60 * 1000);
-  if (now < estimatedDeparture) {
-    return "onLand";
-  }
-
-  const remainingHours = (scheduledTime.getTime() - now.getTime()) / (60 * 60 * 1000);
-  const remainingDistance = Math.max(0, Math.min(distance, remainingHours * CRUISE_SPEED_KMH));
-  if (remainingDistance <= 100) {
-    return "within100km";
-  }
-
-  return "enRoute";
-}
-
 function enrichFlightsWithFallbacks(
   flights: NormalizedFlight[],
   fallbacks: Map<string, AirportMetadata>,
@@ -115,20 +77,19 @@ function enrichFlightsWithFallbacks(
         ? greatCircleRoute(airport, HKG_AIRPORT)
         : greatCircleRoute(HKG_AIRPORT, airport);
 
-    const flightStatus = estimateFlightStatus(
-      now,
-      new Date(flight.scheduledTime),
-      distance,
-      flight.direction
-    );
+    const statusNow = estimateFlightPhase({
+      at: now,
+      scheduledTime: new Date(flight.scheduledTime),
+      distanceKm: distance,
+      direction: flight.direction
+    });
 
     return {
       ...flight,
       routeAirport: airport,
       region: airport.region,
       distanceKm: distance,
-      arrivalStatus: flight.direction === "arrival" ? flightStatus : undefined,
-      flightStatus,
+      statusNow,
       route
     };
   });
@@ -149,16 +110,27 @@ function prioritizeAirportsForWeather(
     .slice(0, limit);
 }
 
-function getWeatherByIata(weather: WeatherRisk[]): Map<string, WeatherRisk> {
+function getWeatherByIata(weather: AirportWeather[]): Map<string, AirportWeather> {
   return new Map(weather.map((risk) => [risk.airportIata, risk]));
+}
+
+function weatherForFlightAtScheduledTime(
+  flight: NormalizedFlight,
+  weather: AirportWeather,
+  now: Date
+): WeatherAssessment {
+  const scheduled = new Date(flight.scheduledTime);
+  const endsAt = addHours(scheduled, 1);
+  const includeMetar = scheduled < addHours(now, 1);
+  return weatherAt(weather, scheduled, endsAt, includeMetar);
 }
 
 function topAirportSummaries(
   flights: NormalizedFlight[],
-  weatherByIata: Map<string, WeatherRisk>,
+  weatherByIata: Map<string, AirportWeather>,
   limit = 8
 ): HorizonAirportSummary[] {
-  const counts = new Map<string, { airport?: AirportMetadata; count: number }>();
+  const counts = new Map<string, { airport: AirportMetadata | null; count: number }>();
   for (const flight of flights) {
     const existing = counts.get(flight.routeAirportIata) ?? {
       airport: flight.routeAirport,
@@ -173,7 +145,7 @@ function topAirportSummaries(
       airportIata,
       airport: value.airport,
       count: value.count,
-      weather: weatherByIata.get(airportIata)
+      weather: weatherByIata.get(airportIata) ?? null
     }))
     .sort((a, b) => b.count - a.count)
     .slice(0, limit);
@@ -188,37 +160,17 @@ function findBucketFlights(
   );
 }
 
-function weatherForBucket(
+function reportedWeatherForBucket(
   flights: NormalizedFlight[],
-  weatherByIata: Map<string, WeatherRisk>
-): { label: string; severity: WeatherRiskLevel } {
-  let level: WeatherRiskLevel = weatherByIata.get("HKG")?.level ?? "nil";
-  const labels = new Set<string>();
-
-  for (const flight of flights) {
-    const risk = weatherByIata.get(flight.routeAirportIata);
-    if (!risk || risk.level === "nil") {
-      continue;
-    }
-    level = highestRisk(level, risk.level);
-    labels.add(flight.routeAirportIata);
-  }
-
-  if (level === "nil") {
-    return { label: "NIL", severity: "nil" };
-  }
-
-  const suffix = labels.size > 0 ? ` ${[...labels].slice(0, 2).join("/")}` : "";
-  return { label: `${describeRisk(level)}${suffix}`, severity: level };
-}
-
-function tafForBucket(
-  flights: NormalizedFlight[],
-  weatherByIata: Map<string, WeatherRisk>
-): { label: string; severity: WeatherRiskLevel } {
-  let level: WeatherRiskLevel = "nil";
-  const labels = new Set<string>();
-  const sources = new Map<string, WeatherRisk>();
+  weatherByIata: Map<string, AirportWeather>,
+  startsAt: Date,
+  endsAt: Date,
+  tafOnly: boolean,
+  includeMetar: boolean
+): { label: string; category: WeatherCategory } {
+  let category: WeatherCategory = "unknown";
+  const assessed: Array<{ iata: string; assessment: WeatherAssessment }> = [];
+  const sources = new Map<string, AirportWeather>();
   const hkg = weatherByIata.get("HKG");
   if (hkg) {
     sources.set("HKG", hkg);
@@ -232,33 +184,32 @@ function tafForBucket(
   }
 
   for (const source of sources.values()) {
-    if (!source.rawTaf) {
-      continue;
-    }
-
-    const risk = classifyWeatherRisk({
-      airportIata: source.airportIata,
-      airportIcao: source.airportIcao,
-      taf: {
-        icaoId: source.airportIcao,
-        rawTAF: source.rawTaf
-      }
-    });
-
-    if (risk.level === "nil") {
-      continue;
-    }
-    level = highestRisk(level, risk.level);
-    labels.add(source.airportIata);
+    const assessment = tafOnly
+      ? tafWeatherAt(source, startsAt, endsAt)
+      : weatherAt(source, startsAt, endsAt, includeMetar);
+    assessed.push({ iata: source.airportIata, assessment });
+    category = mergeWeatherCategory(category, assessment.category);
   }
 
-  if (level === "nil") {
-    return { label: "NIL", severity: "nil" };
-  }
-
+  const reported = assessed.filter((item) => item.assessment.category === "reported");
+  const labels = reported.map((item) => item.iata).slice(0, 2);
+  const codes = [...new Set(reported.flatMap((item) => item.assessment.weatherCodes))].slice(
+    0,
+    2
+  );
+  const sourceNotes = [
+    ...new Set(
+      reported
+        .flatMap((item) => item.assessment.reasons)
+        .filter((reason) => /^(TEMPO|BECMG|FM|PROB\d+)$/.test(reason))
+    )
+  ].slice(0, 2);
+  const suffix = [codes.join("/"), sourceNotes.join("/"), labels.join("/")]
+    .filter(Boolean)
+    .join(" · ");
   return {
-    label: `${describeRisk(level)} ${[...labels].slice(0, 2).join("/")}`,
-    severity: level
+    label: `${describeWeatherCategory(category)}${suffix ? ` ${suffix}` : ""}`,
+    category
   };
 }
 
@@ -282,11 +233,14 @@ function volumeLabel(direction: DashboardOptions["direction"]): string {
 
 function statusRowLabel(
   direction: DashboardOptions["direction"],
-  status: FlightStatus,
+  status: FlightPhase,
   region: string
 ): string {
+  if (status === "unknown") {
+    return `status unavailable linked with ${region}`;
+  }
   if (direction === "arrival") {
-    return status === "onLand"
+    return status === "onGround"
       ? `on ground at origin from ${region}`
       : status === "within100km"
         ? `within 100km of HK from ${region}`
@@ -294,14 +248,14 @@ function statusRowLabel(
   }
 
   if (direction === "departure") {
-    return status === "onLand"
+    return status === "onGround"
       ? `on ground at HKIA to ${region}`
       : status === "within100km"
         ? `within 100km of HK to ${region}`
         : `en route to ${region}`;
   }
 
-  return status === "onLand"
+  return status === "onGround"
     ? `on ground at origin/HKIA linked with ${region}`
     : status === "within100km"
       ? `within 100km of HK linked with ${region}`
@@ -310,7 +264,7 @@ function statusRowLabel(
 
 export function buildHourlyArrivalTable(args: {
   flights: NormalizedFlight[];
-  weather: WeatherRisk[];
+  weather: AirportWeather[];
   now: Date;
   horizonHours: DashboardOptions["horizonHours"];
   direction?: DashboardOptions["direction"];
@@ -319,6 +273,20 @@ export function buildHourlyArrivalTable(args: {
   const scopedFlights = selectedFlights(args.flights, args.direction ?? "arrival");
   const weatherByIata = getWeatherByIata(args.weather);
   const bucketed = hours.map((hour) => findBucketFlights(scopedFlights, hour));
+  const snapshots = hours.map((hour) => {
+    const at = new Date(hour.startsAt);
+    return scopedFlights
+      .map((flight) => ({
+        flight,
+        phase: estimateFlightPhase({
+          at,
+          scheduledTime: new Date(flight.scheduledTime),
+          distanceKm: flight.distanceKm,
+          direction: flight.direction
+        })
+      }))
+      .filter((item) => item.phase !== "completed");
+  });
 
   const volumeRow: TableRow = {
     id: "flight-rate",
@@ -326,25 +294,41 @@ export function buildHourlyArrivalTable(args: {
     values: bucketed.map((flights) => flights.length)
   };
 
-  const tafCells = bucketed.map((flights) => tafForBucket(flights, weatherByIata));
+  const tafCells = hours.map((hour, index) =>
+    reportedWeatherForBucket(
+      snapshots[index].map((item) => item.flight),
+      weatherByIata,
+      new Date(hour.startsAt),
+      new Date(hour.endsAt),
+      true,
+      false
+    )
+  );
   const tafRow: TableRow = {
     id: "taf",
     label: "TAF",
     values: tafCells.map((cell) => cell.label),
-    severity: tafCells.map((cell) => cell.severity)
+    weatherCategory: tafCells.map((cell) => cell.category)
   };
 
-  const weatherCells = bucketed.map((flights) =>
-    weatherForBucket(flights, weatherByIata)
+  const weatherCells = hours.map((hour, index) =>
+    reportedWeatherForBucket(
+      snapshots[index].map((item) => item.flight),
+      weatherByIata,
+      new Date(hour.startsAt),
+      new Date(hour.endsAt),
+      false,
+      index === 0
+    )
   );
   const weatherRow: TableRow = {
-    id: "deep-convection-alert",
-    label: "deep convection / bad weather status",
+    id: "reported-weather",
+    label: "reported weather (METAR now / TAF later; no severity rating)",
     values: weatherCells.map((cell) => cell.label),
-    severity: weatherCells.map((cell) => cell.severity)
+    weatherCategory: weatherCells.map((cell) => cell.category)
   };
 
-  const statuses: FlightStatus[] = ["enRoute", "onLand", "within100km"];
+  const statuses: FlightPhase[] = ["enRoute", "onGround", "within100km", "unknown"];
 
   const regionRows = REGIONS.flatMap((region) =>
     statuses.map<TableRow>((status) => ({
@@ -352,12 +336,9 @@ export function buildHourlyArrivalTable(args: {
       region,
       status,
       label: statusRowLabel(args.direction ?? "arrival", status, region),
-      values: bucketed.map(
-        (flights) =>
-          flights.filter(
-            (flight) =>
-              flight.region === region && (flight.flightStatus ?? flight.arrivalStatus) === status
-          ).length
+      values: snapshots.map(
+        (items) =>
+          items.filter((item) => item.flight.region === region && item.phase === status).length
       )
     }))
   );
@@ -370,7 +351,7 @@ export function buildHourlyArrivalTable(args: {
 
 export function buildHorizonSummaries(args: {
   flights: NormalizedFlight[];
-  weather: WeatherRisk[];
+  weather: AirportWeather[];
   now: Date;
 }): HorizonSummary[] {
   const weatherByIata = getWeatherByIata(args.weather);
@@ -380,16 +361,26 @@ export function buildHorizonSummaries(args: {
     const scoped = args.flights.filter((flight) => inWindow(flight, args.now, end));
     const departures = scoped.filter((flight) => flight.direction === "departure");
     const arrivals = scoped.filter((flight) => flight.direction === "arrival");
+    const windowWeather = new Map(
+      [...weatherByIata.entries()].map(([iata, risk]) => {
+        const assessment = weatherAt(risk, args.now, end, true);
+        return [iata, { ...risk, ...assessment }] as const;
+      })
+    );
     const impacted = scoped.filter((flight) => {
       const risk = weatherByIata.get(flight.routeAirportIata);
-      return risk && risk.level !== "nil";
+      if (!risk) {
+        return false;
+      }
+      const assessment = weatherForFlightAtScheduledTime(flight, risk, args.now);
+      return assessment.category === "reported";
     });
 
     return {
       hours,
-      departureDestinations: topAirportSummaries(departures, weatherByIata),
-      arrivalOrigins: topAirportSummaries(arrivals, weatherByIata),
-      badWeatherAirports: topAirportSummaries(impacted, weatherByIata)
+      departureDestinations: topAirportSummaries(departures, windowWeather),
+      arrivalOrigins: topAirportSummaries(arrivals, windowWeather),
+      reportedWeatherAirports: topAirportSummaries(impacted, windowWeather)
     };
   });
 }
@@ -447,9 +438,10 @@ export async function getDashboardData(
     warnings
   });
 
-  const dashboardEnd = addHours(now, Math.max(30, options.horizonHours));
+  const dashboardStart = addHours(now, -FLIGHT_LOOKBACK_HOURS);
+  const dashboardEnd = addHours(now, Math.max(31, options.horizonHours + 1));
   const timedRawFlights = rawFlights.filter((flight) =>
-    inWindow(flight, now, dashboardEnd)
+    inWindow(flight, dashboardStart, dashboardEnd)
   );
   const missingBeforeFallback = [
     ...new Set(
@@ -482,7 +474,8 @@ export async function getDashboardData(
     [HKG_AIRPORT, ...routeAirports].map((airport) => [airport.iata, airport])
   );
   const airports = [...airportMap.values()];
-  const priorityAirports = prioritizeAirportsForWeather(flights, airports);
+  const priorityFlights = flights.filter((flight) => flight.statusNow !== "completed");
+  const priorityAirports = prioritizeAirportsForWeather(priorityFlights, airports);
   if (airports.length > priorityAirports.length) {
     warnings.push(
       `Weather lookup focused on ${priorityAirports.length} priority airports out of ${airports.length} mapped airports.`

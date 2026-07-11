@@ -1,149 +1,258 @@
-import type { AirportMetadata, WeatherRisk, WeatherRiskLevel } from "./types";
+import type {
+  AirportMetadata,
+  AirportWeather,
+  WeatherAssessment,
+  WeatherCategory,
+  WeatherForecastPeriod
+} from "./types";
 
 interface NoaaMetar {
   icaoId?: string;
   rawOb?: string;
-  obsTime?: string;
-  wspd?: number;
-  wgst?: number;
-  visib?: string | number;
-  wxString?: string;
-  clouds?: Array<{ cover?: string; base?: number }>;
+  obsTime?: string | number;
+  metarType?: string;
+  wxString?: string | null;
+}
+
+interface NoaaTafForecast {
+  timeFrom?: string | number;
+  timeTo?: string | number;
+  fcstChange?: string | null;
+  probability?: number | null;
+  wxString?: string | null;
 }
 
 interface NoaaTaf {
   icaoId?: string;
   rawTAF?: string;
   rawOb?: string;
-  issueTime?: string;
+  issueTime?: string | number;
+  fcsts?: NoaaTafForecast[];
 }
 
-const BAD_WEATHER_CODES = [
-  "FZ",
-  "GR",
-  "TS",
-  "SN",
-  "SG",
-  "IC",
-  "PE",
-  "GS",
-  "VA",
-  "DU",
-  "SA",
-  "PO",
-  "SQ",
-  "FC",
-  "SS",
-  "DS"
-];
+// Meanings below are taken directly from the HKO METAR/SPECI and TAF decoding
+// guides. Unknown codes remain visible verbatim instead of being reclassified.
+const HKO_CODE_MEANINGS: Record<string, string> = {
+  MI: "shallow",
+  BC: "patches",
+  SH: "showers",
+  PR: "partial",
+  TS: "thunderstorms",
+  DZ: "drizzle",
+  RA: "rain",
+  BR: "mist",
+  FG: "fog",
+  HZ: "haze"
+};
+const HKO_CODES = Object.keys(HKO_CODE_MEANINGS).sort((a, b) => b.length - a.length);
 
-const SEVERE_CODES = new Set(["TS", "FZ", "SQ", "FC", "VA", "SS", "DS"]);
+function categoryRank(category: WeatherCategory): number {
+  return { unknown: 0, none: 1, reported: 2 }[category];
+}
 
-function riskRank(level: WeatherRiskLevel): number {
+export function mergeWeatherCategory(
+  current: WeatherCategory,
+  candidate: WeatherCategory
+): WeatherCategory {
+  return categoryRank(candidate) > categoryRank(current) ? candidate : current;
+}
+
+export function describeWeatherCategory(category: WeatherCategory): string {
+  if (category === "unknown") {
+    return "NO DATA";
+  }
+  if (category === "none") {
+    return "NO REPORTED WX";
+  }
+  return "REPORTED WX";
+}
+
+function toIso(value?: string | number): string | null {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  const date =
+    typeof value === "number"
+      ? new Date(value < 10_000_000_000 ? value * 1000 : value)
+      : new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function decodeWeatherGroup(rawGroup: string): string {
+  let group = rawGroup.toUpperCase();
+  const details: string[] = [];
+
+  if (group.startsWith("-")) {
+    details.push("light (-)");
+    group = group.slice(1);
+  } else if (group.startsWith("+")) {
+    details.push("heavy (+)");
+    group = group.slice(1);
+  }
+
+  if (group.startsWith("VC")) {
+    details.push("vicinity (VC)");
+    group = group.slice(2);
+  }
+
+  while (group.length >= 2) {
+    const code = HKO_CODES.find((candidate) => group.startsWith(candidate));
+    if (!code) {
+      break;
+    }
+    details.push(`${HKO_CODE_MEANINGS[code]} (${code})`);
+    group = group.slice(code.length);
+  }
+
+  if (group) {
+    details.push(`unexpanded code ${group}`);
+  }
+  return details.length > 0
+    ? `${rawGroup.toUpperCase()}: ${details.join(", ")}`
+    : `${rawGroup.toUpperCase()}: reported weather code`;
+}
+
+function assessEncodedWeather(wxString?: string | null): WeatherAssessment {
+  if (wxString === undefined || wxString === null || wxString.trim() === "") {
+    return {
+      category: "none",
+      label: describeWeatherCategory("none"),
+      reasons: ["No encoded weather group in source data"],
+      weatherCodes: []
+    };
+  }
+
+  const groups = wxString.toUpperCase().trim().split(/\s+/).filter(Boolean);
+  const reportedGroups = groups.filter((group) => group !== "NSW");
+  if (reportedGroups.length === 0) {
+    return {
+      category: "none",
+      label: describeWeatherCategory("none"),
+      reasons: ["NSW: nil significant weather"],
+      weatherCodes: groups
+    };
+  }
+
   return {
-    nil: 0,
-    caution: 1,
-    significant: 2,
-    severe: 3
-  }[level];
+    category: "reported",
+    label: describeWeatherCategory("reported"),
+    reasons: reportedGroups.map(decodeWeatherGroup),
+    weatherCodes: reportedGroups
+  };
 }
 
-export function highestRisk(
-  current: WeatherRiskLevel,
-  candidate: WeatherRiskLevel
-): WeatherRiskLevel {
-  return riskRank(candidate) > riskRank(current) ? candidate : current;
+function unavailableAssessment(): WeatherAssessment {
+  return {
+    category: "unknown",
+    label: describeWeatherCategory("unknown"),
+    reasons: ["Weather data unavailable"],
+    weatherCodes: []
+  };
 }
 
-function parseVisibilitySm(value?: string | number): number | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
+function combineAssessments(assessments: WeatherAssessment[]): WeatherAssessment {
+  if (assessments.length === 0) {
+    return unavailableAssessment();
   }
-  if (typeof value === "number") {
-    return value;
+
+  let category: WeatherCategory = "unknown";
+  for (const assessment of assessments) {
+    category = mergeWeatherCategory(category, assessment.category);
   }
-  const clean = value.replace("+", "").trim();
-  const parsed = Number(clean);
-  return Number.isFinite(parsed) ? parsed : undefined;
+  const selected = assessments.filter((assessment) => assessment.category === category);
+  return {
+    category,
+    label: describeWeatherCategory(category),
+    reasons: [...new Set(selected.flatMap((assessment) => assessment.reasons))],
+    weatherCodes: [...new Set(selected.flatMap((assessment) => assessment.weatherCodes))]
+  };
 }
 
-function codeRegex(code: string): RegExp {
-  return new RegExp(`(^|[^A-Z])[-+A-Z]*${code}[A-Z]*($|[^A-Z])`, "i");
-}
-
-export function classifyWeatherRisk(args: {
+export function normalizeAirportWeather(args: {
   airportIata: string;
   airportIcao: string;
   metar?: NoaaMetar;
   taf?: NoaaTaf;
-}): WeatherRisk {
-  const reasons: string[] = [];
-  let level: WeatherRiskLevel = "nil";
-  const rawMetar = args.metar?.rawOb;
-  const rawTaf = args.taf?.rawTAF ?? args.taf?.rawOb;
-  const weatherText = `${args.metar?.wxString ?? ""} ${rawMetar ?? ""} ${rawTaf ?? ""}`;
-  const wind = Math.max(args.metar?.wspd ?? 0, args.metar?.wgst ?? 0);
-  const visibilitySm = parseVisibilitySm(args.metar?.visib);
+}): AirportWeather {
+  const metarAssessment = args.metar
+    ? assessEncodedWeather(args.metar.wxString)
+    : null;
 
-  if (wind >= 35) {
-    level = highestRisk(level, "significant");
-    reasons.push(`Wind/gust ${wind} kt`);
-  }
-
-  if (visibilitySm !== undefined && visibilitySm < 0.62) {
-    level = highestRisk(level, "significant");
-    reasons.push(`Visibility ${visibilitySm} SM`);
-  }
-
-  const ceiling = args.metar?.clouds
-    ?.filter((cloud) => ["BKN", "OVC", "VV"].includes(cloud.cover ?? ""))
-    .map((cloud) => cloud.base)
-    .filter((base): base is number => typeof base === "number")
-    .sort((a, b) => a - b)[0];
-
-  if (ceiling !== undefined && ceiling < 1000) {
-    level = highestRisk(level, "significant");
-    reasons.push(`Ceiling ${ceiling} ft`);
-  }
-
-  for (const code of BAD_WEATHER_CODES) {
-    if (codeRegex(code).test(weatherText)) {
-      const codeLevel = SEVERE_CODES.has(code) ? "severe" : "significant";
-      level = highestRisk(level, codeLevel);
-      reasons.push(`Weather code ${code}`);
+  const tafPeriods = (args.taf?.fcsts ?? []).flatMap<WeatherForecastPeriod>((forecast) => {
+    const startsAt = toIso(forecast.timeFrom);
+    const endsAt = toIso(forecast.timeTo);
+    if (!startsAt || !endsAt || new Date(endsAt) <= new Date(startsAt)) {
+      return [];
     }
-  }
+    const assessment = assessEncodedWeather(forecast.wxString);
+    const sourceNotes = [
+      forecast.fcstChange ?? null,
+      forecast.probability === null || forecast.probability === undefined
+        ? null
+        : `PROB${forecast.probability}`
+    ].filter((value): value is string => Boolean(value));
+    return [
+      {
+        ...assessment,
+        reasons: [...assessment.reasons, ...sourceNotes],
+        startsAt,
+        endsAt,
+        probability: forecast.probability ?? null,
+        changeIndicator: forecast.fcstChange ?? null
+      }
+    ];
+  });
 
-  const tafGustMatch = rawTaf?.match(/G(\d{2,3})KT/i);
-  if (tafGustMatch) {
-    const gust = Number(tafGustMatch[1]);
-    if (gust >= 35) {
-      level = highestRisk(level, "significant");
-      reasons.push(`TAF gust ${gust} kt`);
-    }
-  }
-
-  if (level === "nil") {
-    reasons.push("No significant criteria met");
-  }
+  const overall = combineAssessments([
+    ...(metarAssessment ? [metarAssessment] : []),
+    ...tafPeriods
+  ]);
+  const observedAt = toIso(args.metar?.obsTime ?? args.taf?.issueTime);
 
   return {
     airportIata: args.airportIata,
     airportIcao: args.airportIcao,
-    level,
-    label:
-      level === "nil"
-        ? "NIL"
-        : level === "caution"
-          ? "Caution"
-          : level === "significant"
-            ? "Significant"
-            : "Severe",
-    reasons: [...new Set(reasons)],
-    rawMetar,
-    rawTaf,
-    observedAt: args.metar?.obsTime ?? args.taf?.issueTime
+    ...overall,
+    metar: metarAssessment
+      ? {
+          ...metarAssessment,
+          observedAt: toIso(args.metar?.obsTime),
+          reportType: args.metar?.metarType ?? null
+        }
+      : null,
+    tafPeriods,
+    rawMetar: args.metar?.rawOb ?? null,
+    rawTaf: args.taf?.rawTAF ?? args.taf?.rawOb ?? null,
+    observedAt
   };
+}
+
+export function tafWeatherAt(
+  weather: AirportWeather,
+  startsAt: Date,
+  endsAt: Date
+): WeatherAssessment {
+  const overlapping = weather.tafPeriods.filter(
+    (period) => new Date(period.startsAt) < endsAt && new Date(period.endsAt) > startsAt
+  );
+  return combineAssessments(overlapping);
+}
+
+export function weatherAt(
+  weather: AirportWeather,
+  startsAt: Date,
+  endsAt: Date,
+  includeMetar: boolean
+): WeatherAssessment {
+  const assessments: WeatherAssessment[] = [];
+  if (includeMetar && weather.metar) {
+    assessments.push(weather.metar);
+  }
+  const taf = tafWeatherAt(weather, startsAt, endsAt);
+  if (taf.category !== "unknown") {
+    assessments.push(taf);
+  }
+  return combineAssessments(assessments);
 }
 
 async function fetchNoaa<T>(
@@ -179,7 +288,7 @@ async function fetchNoaa<T>(
 export async function fetchWeatherForAirports(
   airports: AirportMetadata[],
   warnings: string[]
-): Promise<WeatherRisk[]> {
+): Promise<AirportWeather[]> {
   const icaos = [...new Set(airports.map((airport) => airport.icao))].slice(0, 90);
   if (icaos.length === 0) {
     return [];
@@ -192,7 +301,6 @@ export async function fetchWeatherForAirports(
 
   let metars: NoaaMetar[] = [];
   let tafs: NoaaTaf[] = [];
-
   const [metarResult, tafResult] = await Promise.allSettled([
     fetchNoaa<NoaaMetar>("metar", icaos, 8000),
     fetchNoaa<NoaaTaf>("taf", tafIcaos, 8000)
@@ -203,7 +311,6 @@ export async function fetchWeatherForAirports(
   } else {
     warnings.push(`NOAA METAR unavailable: ${String(metarResult.reason)}`);
   }
-
   if (tafResult.status === "fulfilled") {
     tafs = tafResult.value;
   } else {
@@ -214,24 +321,11 @@ export async function fetchWeatherForAirports(
   const tafByIcao = new Map(tafs.map((taf) => [taf.icaoId, taf]));
 
   return airports.map((airport) =>
-    classifyWeatherRisk({
+    normalizeAirportWeather({
       airportIata: airport.iata,
       airportIcao: airport.icao,
       metar: metarByIcao.get(airport.icao),
       taf: tafByIcao.get(airport.icao)
     })
   );
-}
-
-export function describeRisk(level: WeatherRiskLevel): string {
-  if (level === "nil") {
-    return "NIL";
-  }
-  if (level === "severe") {
-    return "BAD WX";
-  }
-  if (level === "significant") {
-    return "WX RISK";
-  }
-  return "WATCH";
 }

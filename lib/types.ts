@@ -9,9 +9,13 @@ export type Region =
   | "Africa"
   | "Europe"
   | "Other";
-export type FlightStatus = "enRoute" | "onLand" | "within100km";
-export type ArrivalStatus = FlightStatus;
-export type WeatherRiskLevel = "nil" | "caution" | "significant" | "severe";
+export type FlightPhase =
+  | "onGround"
+  | "enRoute"
+  | "within100km"
+  | "completed"
+  | "unknown";
+export type WeatherCategory = "unknown" | "none" | "reported";
 
 export interface AirportMetadata {
   iata: string;
@@ -24,15 +28,33 @@ export interface AirportMetadata {
   lon: number;
 }
 
-export interface WeatherRisk {
-  airportIata: string;
-  airportIcao: string;
-  level: WeatherRiskLevel;
+export interface WeatherAssessment {
+  category: WeatherCategory;
   label: string;
   reasons: string[];
-  rawMetar?: string;
-  rawTaf?: string;
-  observedAt?: string;
+  weatherCodes: string[];
+}
+
+export interface WeatherObservation extends WeatherAssessment {
+  observedAt: string | null;
+  reportType: string | null;
+}
+
+export interface WeatherForecastPeriod extends WeatherAssessment {
+  startsAt: string;
+  endsAt: string;
+  probability: number | null;
+  changeIndicator: string | null;
+}
+
+export interface AirportWeather extends WeatherAssessment {
+  airportIata: string;
+  airportIcao: string;
+  metar: WeatherObservation | null;
+  tafPeriods: WeatherForecastPeriod[];
+  rawMetar: string | null;
+  rawTaf: string | null;
+  observedAt: string | null;
 }
 
 export interface RoutePoint {
@@ -48,13 +70,12 @@ export interface NormalizedFlight {
   direction: FlightDirection;
   trafficType: TrafficType;
   routeAirportIata: string;
-  routeAirport?: AirportMetadata;
+  routeAirport: AirportMetadata | null;
   region: Region;
-  statusText?: string;
-  statusCode?: string | null;
-  arrivalStatus?: ArrivalStatus;
-  flightStatus?: FlightStatus;
-  distanceKm?: number;
+  statusText: string | null;
+  statusCode: string | null;
+  statusNow: FlightPhase;
+  distanceKm: number | null;
   route: RoutePoint[];
 }
 
@@ -69,35 +90,35 @@ export interface TableRow {
   id: string;
   label: string;
   region?: Region;
-  status?: FlightStatus;
+  status?: FlightPhase;
   values: Array<number | string>;
-  severity?: WeatherRiskLevel[];
+  weatherCategory?: WeatherCategory[];
 }
 
 export interface HorizonAirportSummary {
   airportIata: string;
-  airport?: AirportMetadata;
+  airport: AirportMetadata | null;
   count: number;
-  weather?: WeatherRisk;
+  weather: AirportWeather | null;
 }
 
 export interface HorizonSummary {
   hours: 6 | 12 | 18 | 24 | 30;
   departureDestinations: HorizonAirportSummary[];
   arrivalOrigins: HorizonAirportSummary[];
-  badWeatherAirports: HorizonAirportSummary[];
+  reportedWeatherAirports: HorizonAirportSummary[];
 }
 
 export interface DashboardData {
   generatedAt: string;
   cacheExpiresAt: string;
-  sourceUpdatedAt?: string;
+  sourceUpdatedAt: string | null;
   hours: HourlyCell[];
   hourlyArrivalTable: TableRow[];
   horizons: HorizonSummary[];
   flights: NormalizedFlight[];
   airports: AirportMetadata[];
-  weather: WeatherRisk[];
+  weather: AirportWeather[];
   warnings: string[];
 }
 
@@ -106,4 +127,9 @@ export interface DashboardOptions {
   traffic: TrafficType | "both";
   horizonHours: 6 | 12 | 15 | 18 | 24 | 30;
   refresh: boolean;
+}
+
+export interface DashboardError {
+  error: string;
+  warnings: string[];
 }
