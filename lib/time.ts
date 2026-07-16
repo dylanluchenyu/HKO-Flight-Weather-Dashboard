@@ -56,7 +56,7 @@ export function buildHourlyBuckets(now: Date, count: number) {
     const endsAt = addHours(now, offset + 1);
     return {
       hourOffset: offset,
-      label: offset === 0 ? "T(now)" : `+${offset}`,
+      label: offset === 0 ? "Now-+1h" : `+${offset}h-+${offset + 1}h`,
       startsAt: startsAt.toISOString(),
       endsAt: endsAt.toISOString()
     };

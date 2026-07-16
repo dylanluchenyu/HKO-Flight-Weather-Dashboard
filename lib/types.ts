@@ -16,6 +16,16 @@ export type FlightPhase =
   | "completed"
   | "unknown";
 export type WeatherCategory = "unknown" | "none" | "reported";
+export type FlightSituationCellTone = "plain" | "nil" | "caution" | "alert";
+export type FlightSituationRowKind = "rate" | "convection" | "phase";
+export type RouteAirportWeatherStatus =
+  | "metar"
+  | "taf"
+  | "metar-taf"
+  | "none"
+  | "no-data"
+  | "not-queried";
+export type WeatherSourceKind = "METAR" | "TAF";
 
 export interface AirportMetadata {
   iata: string;
@@ -38,6 +48,7 @@ export interface WeatherAssessment {
 export interface WeatherObservation extends WeatherAssessment {
   observedAt: string | null;
   reportType: string | null;
+  windGustKt: number | null;
 }
 
 export interface WeatherForecastPeriod extends WeatherAssessment {
@@ -45,6 +56,7 @@ export interface WeatherForecastPeriod extends WeatherAssessment {
   endsAt: string;
   probability: number | null;
   changeIndicator: string | null;
+  windGustKt: number | null;
 }
 
 export interface AirportWeather extends WeatherAssessment {
@@ -89,24 +101,47 @@ export interface HourlyCell {
 export interface TableRow {
   id: string;
   label: string;
-  region?: Region;
-  status?: FlightPhase;
   values: Array<number | string>;
   weatherCategory?: WeatherCategory[];
 }
 
-export interface HorizonAirportSummary {
+export interface FlightSituationRow {
+  id: string;
+  label: string;
+  kind: FlightSituationRowKind;
+  region?: Region;
+  values: Array<number | string>;
+  tones?: FlightSituationCellTone[];
+}
+
+export interface RouteAirportSummary {
   airportIata: string;
   airport: AirportMetadata | null;
   count: number;
-  weather: AirportWeather | null;
+  arrivalCount: number;
+  departureCount: number;
+  weatherStatus: RouteAirportWeatherStatus;
+  weatherCodes: string[];
 }
 
-export interface HorizonSummary {
-  hours: 6 | 12 | 18 | 24 | 30;
-  departureDestinations: HorizonAirportSummary[];
-  arrivalOrigins: HorizonAirportSummary[];
-  reportedWeatherAirports: HorizonAirportSummary[];
+export interface RouteWeatherSource {
+  kind: WeatherSourceKind;
+  weatherCodes: string[];
+  reasons: string[];
+  observedAt?: string | null;
+  startsAt?: string;
+  endsAt?: string;
+  probability?: number | null;
+  changeIndicator?: string | null;
+}
+
+export interface RouteWeatherMatch {
+  airportIata: string;
+  airport: AirportMetadata | null;
+  flightCount: number;
+  arrivalCount: number;
+  departureCount: number;
+  sources: RouteWeatherSource[];
 }
 
 export interface DashboardData {
@@ -115,7 +150,10 @@ export interface DashboardData {
   sourceUpdatedAt: string | null;
   hours: HourlyCell[];
   hourlyArrivalTable: TableRow[];
-  horizons: HorizonSummary[];
+  situationHours: HourlyCell[];
+  flightSituationRows: FlightSituationRow[];
+  routeAirportSummaries: RouteAirportSummary[];
+  routeWeatherMatches: RouteWeatherMatch[];
   flights: NormalizedFlight[];
   airports: AirportMetadata[];
   weather: AirportWeather[];
@@ -125,7 +163,7 @@ export interface DashboardData {
 export interface DashboardOptions {
   direction: FlightDirection | "both";
   traffic: TrafficType | "both";
-  horizonHours: 6 | 12 | 15 | 18 | 24 | 30;
+  horizonHours: 6 | 12 | 18 | 24 | 30;
   refresh: boolean;
 }
 

@@ -1,0 +1,81 @@
+​problem​
+
+
+​HKO supports operation of HK Airport by the provision of Aviation Meteorological Advisor service :​
+ ​https://www.hko.gov.hk/en/education/aviation-and-marine/aviation/00688-Services-provided-by-Aeronautical​
+  ​-Meteorological-Adviser-in-Integrated-Airport-Centre.html​
+
+
+​painpoint​
+
+​Everyday, HKO needs to check impact aviation weather over asia (mainly) and other places as well as to​
+ ​check ground weather conditions at different airports. Then HKO informs all airlines, Civil Aviation​
+  ​Department, Airport authority etc about the aviation impactful weather at the​​WHOLE 3D space​​over the​
+   ​world to alert them about the potential risk/safety of aviation and the potential impact to air traffic.​
+    ​For instance, flight will avoid severe thunderstorm weather and they cannot land/take off when weather at​
+     ​airport is unfavourable, such as dense fog, ice runway, dust storm etc...​
+
+
+
+
+​Airplanes to avoid bad weather (rain) during flight​
+​When heavy rain in HK, the visibility can be too low for safe landing. Flight has to hold in the air or land at​
+ ​another airport​
+
+
+
+
+​Service enhancement opportunity​
+
+​Now, HKO uses the following two tools to help understand the aviation impactful weather at airports of​
+ ​different places and to understand the general destinations / origins of all flights over years in hk.​
+
+   ​1.​ ​https://aero-weather-gis.vercel.app/​ ​(showing the​​actual and forecast bad weather of different​
+         ​airport) red airport means location with bad weather for airplanes​
+
+
+
+
+                                    （
+   ​2.​ ​http://10.53.141.110:5001/​​ flight statistics from​​past data) source code:​
+        ​https://github.com/ansonleung0802/hkia_dashboard​
+
+
+
+
+​However, we do not hv auto-updated latest airports of destination / origin for ALL passengers/cargo​
+ ​flights in the next XX hours.​
+
+​For instance, before we present aviation weather impact to CAD, AA and airlines, we would like to know the​
+ ​following information precisely and to present them easily with simple images.​
+
+   ​1.​ ​In the next 6/12/18/24 hours, where will be the destination of all airports of flight departing from HK?​
+    ​2.​ ​In the next 6/12/18/24 hours, where will the flight landing in HK be coming from ?​
+     ​3.​ ​With the knowledge from pt.1 and pt.2, can we match directly which airports in other countries​
+            ​report/forecast bad weather. Then we can inform clearly the stakeholders the potential operational​
+             ​concern. E.g. they may need to divert flight, suspend flight , cancel flight, etc..​
+      ​4.​ ​Display the potential trajectory (en route) of all the flights as identified from pt. 1 and pt. 2. On a GIS​
+              ​map.​
+​Sample :​
+​Implementer​
+
+​Chenyu Lu, Dylan​
+
+
+
+​Completion date​
+
+​before Aug 2026​
+
+
+
+​Reference :​
+
+​https://www.hongkongairport.com/en/flights/departures/passenger.page​
+
+​https://www.flightradar24.com/21.79,113.93/8​
+
+​https://www.faa.gov/air_traffic/publications/atpubs/aim_html/chap7_section_1.html​
+
+​https://wmo.int/topics/aviation​
+

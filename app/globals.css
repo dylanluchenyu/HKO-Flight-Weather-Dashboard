@@ -409,7 +409,7 @@ select:focus {
 
 .region-items {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 0.28rem 1rem;
   font-size: 0.84rem;
 }
@@ -451,6 +451,216 @@ select:focus {
 
 .region-items .empty {
   grid-column: 1 / -1;
+}
+
+.route-airport-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.55rem;
+  align-items: center;
+  min-width: 0;
+  padding: 0.5rem 0;
+}
+
+.airport-main {
+  min-width: 0;
+}
+
+.airport-main strong,
+.airport-main small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.airport-main small {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.situation-panel {
+  margin-bottom: 1.5rem;
+  padding: 0.75rem 1rem 1rem;
+  border: 1px solid #d8d8d8;
+  border-radius: var(--radius);
+  background: #f7f7f7;
+  color: #1f2328;
+  box-shadow: var(--shadow);
+}
+
+.situation-titlebar {
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr) 150px;
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 0.9rem;
+}
+
+.situation-titlebar h2 {
+  justify-self: center;
+  padding: 0.2rem 0.55rem;
+  background: #eff9ea;
+  color: #0f1720;
+  font-size: 1.55rem;
+  font-weight: 500;
+  text-decoration: underline;
+}
+
+.situation-generated,
+.situation-refresh {
+  justify-self: center;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid #9c9c9c;
+  color: #1f2328;
+  font-weight: 700;
+  line-height: 1.15;
+  text-align: center;
+}
+
+.situation-generated {
+  max-width: 92px;
+  background: #fff27a;
+  font-size: 0.62rem;
+}
+
+.situation-refresh {
+  background: #f7b2d2;
+  font-size: 0.92rem;
+}
+
+.situation-layout {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  gap: 0.75rem;
+  align-items: start;
+}
+
+.situation-side-label {
+  padding-top: 8.7rem;
+  color: #4b2545;
+  font-size: 0.98rem;
+  line-height: 1.35;
+  text-align: right;
+}
+
+.situation-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 0.35rem;
+}
+
+.situation-table {
+  width: max-content;
+  min-width: 0;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  font-size: 0.82rem;
+}
+
+.situation-table th,
+.situation-table td {
+  width: 48px;
+  min-width: 0;
+  height: 34px;
+  border-right: 1px solid #595959;
+  border-bottom: 1px solid #595959;
+  text-align: center;
+}
+
+.situation-table thead th {
+  background: #fff277;
+  color: #1f2328;
+  font-size: 0.84rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.situation-table thead th:first-child {
+  background: transparent;
+  border: 0;
+}
+
+.situation-row-label {
+  padding-right: 1rem;
+  border: 0;
+  color: #394150;
+  background: transparent;
+  font-weight: 500;
+  line-height: 1.2;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.situation-table th.situation-row-label {
+  width: 240px;
+  min-width: 240px;
+}
+
+.situation-cell {
+  padding: 0.18rem 0.3rem;
+  color: #1f2328;
+  font-family: "DM Sans", system-ui, sans-serif;
+  font-weight: 600;
+  line-height: 1.15;
+  vertical-align: middle;
+}
+
+.situation-cell-nil {
+  background: #a9ee91;
+  font-size: 1rem;
+}
+
+.situation-cell-caution {
+  background: #fff277;
+  font-size: 0.58rem;
+}
+
+.situation-cell-alert {
+  background: #f7a8cc;
+  font-size: 0.58rem;
+}
+
+.situation-row-convection .situation-cell {
+  height: 48px;
+}
+
+.situation-cell-plain {
+  background: #a9ee91;
+}
+
+.situation-cell-phase {
+  background: #fffce9;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.86rem;
+}
+
+.situation-status-note,
+.situation-status-main {
+  display: block;
+}
+
+.situation-status-note {
+  margin-bottom: 0.08rem;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.situation-status-main {
+  overflow-wrap: normal;
+}
+
+.situation-row-phase:nth-child(3n + 3) .situation-cell-phase,
+.situation-row-phase:nth-child(3n + 3) .situation-row-label {
+  border-top: 12px solid #f7f7f7;
+}
+
+.situation-explain {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0.85rem 0 0 172px;
+  color: #475467;
+  font-size: 0.76rem;
 }
 
 .table-panel {
@@ -548,6 +758,11 @@ select:focus {
   background: rgba(139, 148, 158, 0.14);
 }
 
+.weather-not-queried {
+  color: #f0d490;
+  background: rgba(210, 153, 34, 0.14);
+}
+
 .weather-reported {
   color: #79c0ff;
   background: rgba(88, 166, 255, 0.18);
@@ -594,6 +809,27 @@ select:focus {
   font-size: 0.78rem;
 }
 
+.match-source-list {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.match-source {
+  display: grid;
+  gap: 0.12rem;
+}
+
+.match-source strong {
+  color: var(--text);
+  font-size: 0.78rem;
+}
+
+.match-source span {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
 .section-description {
   max-width: 640px;
   margin: 0.3rem 0 0;
@@ -608,17 +844,22 @@ select:focus {
   border-radius: 999px;
   font-size: 0.64rem;
   font-weight: 800;
+  line-height: 1.25;
   text-align: center;
+  overflow-wrap: anywhere;
 }
 
 .horizon-grid {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
   gap: 1rem;
   margin-bottom: 1.5rem;
 }
 
 .horizon-card {
+  flex: 1 1 380px;
+  min-width: min(100%, 380px);
   padding: 1rem;
 }
 
@@ -649,6 +890,15 @@ select:focus {
   padding: 0.5rem;
 }
 
+.summary-item > div:first-child {
+  min-width: 0;
+}
+
+.summary-item strong,
+.summary-item span {
+  overflow-wrap: anywhere;
+}
+
 .summary-count {
   width: 30px;
   height: 30px;
@@ -671,8 +921,27 @@ select:focus {
     grid-template-columns: 1fr;
   }
 
-  .horizon-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .situation-titlebar {
+    grid-template-columns: 1fr;
+  }
+
+  .situation-titlebar h2,
+  .situation-generated,
+  .situation-refresh {
+    justify-self: stretch;
+  }
+
+  .situation-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .situation-side-label {
+    padding-top: 0;
+    text-align: left;
+  }
+
+  .situation-explain {
+    margin-left: 0;
   }
 
 }
@@ -696,8 +965,26 @@ select:focus {
     grid-template-columns: repeat(auto-fit, minmax(24px, 1fr));
   }
 
-  .horizon-grid {
-    grid-template-columns: 1fr;
+  .summary-item {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .summary-item .weather-pill {
+    grid-column: 1 / -1;
+    justify-self: stretch;
+    border-radius: var(--radius-sm);
+    text-align: left;
+  }
+
+  .route-airport-item {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .route-airport-item .weather-pill {
+    grid-column: 2;
+    justify-self: start;
+    border-radius: var(--radius-sm);
+    text-align: left;
   }
 
   .concern-list {

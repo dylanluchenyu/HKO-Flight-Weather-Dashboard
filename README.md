@@ -5,18 +5,25 @@ source-reported airport weather context.
 
 ## What It Shows
 
-- Wallace-style hourly situational-awareness table from `T(now)` to the selected
-  `6/12/15/18/24/30h` horizon.
+- Fixed `T(now)` to `+15` Flight Situational Awareness table for arriving flights,
+  matching the operational table layout: predicted arrival rate, deep convection
+  status, and regional in-air/on-land/within-100km arrival counts.
 - Direction filter for inbound, outbound, or both directions. Combined mode
-  includes arrivals and departures in the chart, table, summaries, airport watch
-  list, and operational concern cards.
-- Predicted HKIA-linked flight counts by region and estimated status:
-  `en route`, `on ground`, `within 100km of HK`, and explicit `unknown`.
-- Separate `TAF` forecast row plus a reported-weather row based on structured
-  public aviation METAR/TAF data. Neither row invents a severity rating.
-- Next `6/12/18/24/30h` summaries for arrival origins, departure destinations,
-  and reported-weather matches.
-- Local Hong Kong time and UTC `Z` time on hourly chart and table headers.
+  includes arrivals and departures in the chart, summaries, airport watch list,
+  and route-airport weather match panel. The situational-awareness table remains
+  fixed to arrivals.
+- Current-window summaries for all selected passenger/cargo flights, all route
+  airports, and route airports matched to METAR/TAF weather.
+- Deep convection status derived from VHHH METAR at `T(now)` and overlapping VHHH
+  TAF periods for future columns. This is not an official alert feed or severity
+  rating.
+- Top 10 route airports by region for the selected window. Inbound mode lists
+  arrival origins, outbound mode lists departure destinations, and combined mode
+  includes both.
+- Route-airport weather matches aggregated by airport, including source, codes,
+  observed time, forecast period, and selected-window flight count.
+- Local Hong Kong time and UTC `Z` time on the hourly chart, with HKT generation
+  time on the situational-awareness table.
 - Route-airport groups for Greater China, Asia, the Middle East, Oceania,
   America, Africa, Europe, and unmapped/other locations.
 
@@ -47,19 +54,22 @@ npm run build
 ## Notes
 
 - The dashboard auto-refreshes every 30 minutes and supports manual refresh.
-- The Wallace rate row counts scheduled HKIA movements in one-hour buckets.
-  Region/status rows are point-in-time snapshots: every T/+N column reevaluates
-  all selected active flights at that forecast time.
-- A priority airport means HKG plus mapped route airports ranked by selected-window
-  flight count. The first 72 are queried for METAR and the first 45 for TAF so the
-  live dashboard remains responsive.
-- Estimated flight duration is
-  `max(1 hour, great-circle distance / 820 km/h + 0.55 hour)`. `En route` and
-  `within 100km` are schedule-and-distance estimates because HKIA public data does
-  not include live aircraft positions. `Within 100km` includes every flight that
-  is estimated airborne and at most 100 km from Hong Kong at that forecast time.
-- For arrivals, `on ground` means still at the origin airport. For departures,
-  `on ground` means still at HKIA before scheduled departure.
+- The situational-awareness table is fixed to arrival traffic and always shows
+  `T(now)` through `+15`, independent of the selected 6/12/18/24/30h window used
+  by the other panels.
+- `Predicted flight arrival rate` is based on HKIA scheduled arrivals in each
+  one-hour interval. It is a forecast from schedule data, not an actual landed
+  count.
+- `En route`, `on land`, and `within 100km` rows are schedule-and-distance
+  estimates. `En route` means estimated in air but not within 100 km of Hong Kong;
+  `within 100km` means estimated in air and close to Hong Kong.
+- Weather lookup is a coverage/performance limit, not a business filter. The
+  dashboard keeps all route airports in flight totals and rankings, while querying
+  weather for top route airports by selected-window flight count. Airports outside
+  that weather-query coverage are shown as `Not queried`, not as `NO DATA`.
+- Route geometry and schedule-based flight phase fields remain available in the
+  API for future GIS map work, but they are not part of the default cleaned
+  dashboard display.
 - METAR and TAF do not provide a universal `Severe`/`Significant` impact level.
   The dashboard therefore uses only three data states: `NO DATA` when no usable
   report exists, `NO REPORTED WX` when a structured report has no weather group
@@ -73,15 +83,14 @@ npm run build
   periods that overlap the relevant hour. `TEMPO`, `BECMG`, `FM`, and `PROBnn`
   are preserved from the source. Raw report text is retained for reference but
   is never scanned for hazard substrings.
-- Wind, gust, visibility, and cloud values are not converted into a custom impact
-  category. Operational minima depend on information not present in this dataset,
-  including runway, aircraft, operator, and official warning criteria.
-- Operational-concern cards contain active or next-30-hour selected flights whose
-  route-airport report contains `REPORTED WX` in the applicable period. Cards are
-  sorted by scheduled time and do not imply severity.
-- Missing airport, distance, METAR, or TAF data is shown as `Unknown` or `NO DATA`
-  and appears in the data-quality notices; absence is never interpreted as no
-  reported weather.
+- Wind gust can trigger the source-backed deep-convection indicator when it reaches
+  the table threshold, but it is not converted into an operational severity.
+  Operational minima depend on information not present in this dataset, including
+  runway, aircraft, operator, and official warning criteria.
+- The route-airport weather match panel aggregates by airport inside the selected
+  window and does not imply severity.
+- Missing airport, METAR, or TAF data is shown as `Unknown`, `NO DATA`, or
+  `Not queried` as applicable; absence is never interpreted as no reported weather.
 - Greater China includes mainland China, Hong Kong, Macau, and Taiwan.
 
 ## Official Weather References

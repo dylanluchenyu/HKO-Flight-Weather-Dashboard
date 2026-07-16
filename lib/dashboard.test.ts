@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { getAirport } from "./airports";
 import { greatCircleRoute, HKG_AIRPORT } from "./geo";
-import { buildHorizonSummaries, buildHourlyArrivalTable, parseDashboardOptions } from "./dashboard";
+import {
+  buildFlightSituationTable,
+  buildHourlyArrivalTable,
+  buildRouteAirportSummaries,
+  buildRouteWeatherMatches,
+  parseDashboardOptions
+} from "./dashboard";
 import type { AirportWeather, NormalizedFlight } from "./types";
 
 const now = new Date("2026-06-29T12:00:00+08:00");
@@ -41,9 +47,22 @@ const weather: AirportWeather[] = [
       reasons: ["No encoded weather group in source data"],
       weatherCodes: [],
       observedAt: "2026-06-29T04:00:00.000Z",
-      reportType: "METAR"
+      reportType: "METAR",
+      windGustKt: null
     },
-    tafPeriods: [],
+    tafPeriods: [
+      {
+        startsAt: "2026-06-29T04:00:00.000Z",
+        endsAt: "2026-06-29T20:00:00.000Z",
+        probability: null,
+        category: "none",
+        label: "NO REPORTED WX",
+        reasons: ["No encoded weather group in source data"],
+        weatherCodes: [],
+        changeIndicator: null,
+        windGustKt: null
+      }
+    ],
     rawMetar: "VHHH 290400Z 09010KT CAVOK",
     rawTaf: null,
     observedAt: "2026-06-29T04:00:00.000Z"
@@ -65,7 +84,8 @@ const weather: AirportWeather[] = [
         label: "REPORTED WX",
         reasons: ["TSRA: thunderstorms (TS), rain (RA)"],
         weatherCodes: ["TSRA"],
-        changeIndicator: null
+        changeIndicator: null,
+        windGustKt: null
       }
     ],
     rawMetar: null,
@@ -75,23 +95,21 @@ const weather: AirportWeather[] = [
 ];
 
 describe("dashboard aggregation", () => {
-  it("buckets arrival rate and region/status counts by hour", () => {
+  it("builds a compact hourly table with flight count, METAR, and TAF rows", () => {
     const result = buildHourlyArrivalTable({
       flights: [flight({ distanceKm: 805 })],
       weather,
       now,
-      horizonHours: 15,
+      horizonHours: 12,
       direction: "arrival"
     });
 
-    expect(result.hours).toHaveLength(16);
+    expect(result.hours).toHaveLength(12);
+    expect(result.hours[0].label).toBe("Now-+1h");
+    expect(result.rows.map((row) => row.id)).toEqual(["flight-rate", "metar", "taf"]);
     expect(result.rows.find((row) => row.id === "flight-rate")?.values[0]).toBe(1);
-    expect(result.rows.find((row) => row.id === "Greater China-enRoute")?.values[0]).toBe(1);
-    expect(result.rows.findIndex((row) => row.id === "taf")).toBeLessThan(
-      result.rows.findIndex((row) => row.id === "reported-weather")
-    );
+    expect(result.rows.find((row) => row.id === "metar")?.values[0]).toBe("NO DATA");
     expect(result.rows.find((row) => row.id === "taf")?.values[0]).toContain("TPE");
-    expect(result.rows.find((row) => row.id === "reported-weather")?.values[0]).toContain("TPE");
   });
 
   it("includes arrivals and departures when both directions are selected", () => {
@@ -111,49 +129,17 @@ describe("dashboard aggregation", () => {
       ],
       weather,
       now,
-      horizonHours: 15,
+      horizonHours: 12,
       direction: "both"
     });
 
     expect(result.rows.find((row) => row.id === "flight-rate")?.label).toBe(
-      "predicted arrival + departure rate"
+      "selected-window inbound + outbound flight count"
     );
     expect(result.rows.find((row) => row.id === "flight-rate")?.values[0]).toBe(2);
-    expect(result.rows.find((row) => row.id === "Asia-onGround")?.values[0]).toBe(1);
   });
 
-  it("uses point-in-time snapshots instead of scheduled-hour membership for region rows", () => {
-    const result = buildHourlyArrivalTable({
-      flights: [
-        flight({
-          id: "later-arrival",
-          scheduledTime: "2026-06-29T15:00:00.000+08:00",
-          distanceKm: 3000
-        })
-      ],
-      weather,
-      now,
-      horizonHours: 6,
-      direction: "arrival"
-    });
-
-    expect(result.rows.find((row) => row.id === "flight-rate")?.values[0]).toBe(0);
-    expect(result.rows.find((row) => row.id === "Greater China-enRoute")?.values[0]).toBe(1);
-  });
-
-  it("keeps missing-distance flights explicit in an unknown status row", () => {
-    const result = buildHourlyArrivalTable({
-      flights: [flight({ distanceKm: null })],
-      weather,
-      now,
-      horizonHours: 6,
-      direction: "arrival"
-    });
-
-    expect(result.rows.find((row) => row.id === "Greater China-unknown")?.values[0]).toBe(1);
-  });
-
-  it("accepts a next 30 hour table horizon", () => {
+  it("uses exactly the selected horizon without an extra snapshot column", () => {
     const result = buildHourlyArrivalTable({
       flights: [],
       weather,
@@ -165,52 +151,153 @@ describe("dashboard aggregation", () => {
       new URL("https://example.test/api/dashboard?horizonHours=30&direction=both")
     );
 
-    expect(result.hours).toHaveLength(31);
+    expect(result.hours).toHaveLength(30);
+    expect(result.hours.at(-1)?.label).toBe("+29h-+30h");
     expect(options.horizonHours).toBe(30);
   });
 
-  it("summarizes 6/12/18/24 hour airport horizons", () => {
-    const summaries = buildHorizonSummaries({
+  it("defaults to 12 hours and falls back from removed 15 hour requests", () => {
+    expect(parseDashboardOptions(new URL("https://example.test/api/dashboard")).horizonHours).toBe(
+      12
+    );
+    expect(
+      parseDashboardOptions(new URL("https://example.test/api/dashboard?horizonHours=15"))
+        .horizonHours
+    ).toBe(12);
+  });
+
+  it("summarizes all current-window route airports and separates not-queried weather", () => {
+    const nrt = getAirport("NRT")!;
+    const summaries = buildRouteAirportSummaries({
       flights: [
         flight({ id: "arrival", direction: "arrival", routeAirportIata: "TPE" }),
         flight({
           id: "departure",
           direction: "departure",
           routeAirportIata: "NRT",
-          routeAirport: getAirport("NRT")!,
-          region: "Asia"
+          routeAirport: nrt,
+          region: nrt.region,
+          route: greatCircleRoute(HKG_AIRPORT, nrt)
         })
       ],
       weather,
-      now
+      now,
+      horizonHours: 12,
+      direction: "both"
     });
 
-    expect(summaries).toHaveLength(5);
-    expect(summaries[0].arrivalOrigins[0].airportIata).toBe("TPE");
-    expect(summaries[0].departureDestinations[0].airportIata).toBe("NRT");
-    expect(summaries[0].reportedWeatherAirports[0].airportIata).toBe("TPE");
-    expect(summaries.at(-1)?.hours).toBe(30);
+    expect(summaries.map((summary) => summary.airportIata)).toEqual(["NRT", "TPE"]);
+    expect(summaries.find((summary) => summary.airportIata === "TPE")?.weatherStatus).toBe("taf");
+    expect(summaries.find((summary) => summary.airportIata === "NRT")?.weatherStatus).toBe(
+      "not-queried"
+    );
   });
 
-  it("matches bad-weather flights only when the TAF period overlaps flight time", () => {
+  it("matches route-airport weather only when METAR or TAF applies inside the selected window", () => {
+    const matches = buildRouteWeatherMatches({
+      flights: [flight({ scheduledTime: "2026-06-29T12:30:00.000+08:00" })],
+      weather,
+      now,
+      horizonHours: 12,
+      direction: "arrival"
+    });
+
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toMatchObject({
+      airportIata: "TPE",
+      flightCount: 1,
+      sources: [expect.objectContaining({ kind: "TAF", weatherCodes: ["TSRA"] })]
+    });
+
     const delayedWeather: AirportWeather[] = weather.map((risk) =>
       risk.airportIata === "TPE"
         ? {
             ...risk,
             tafPeriods: risk.tafPeriods.map((period) => ({
               ...period,
-              startsAt: "2026-06-29T14:00:00.000Z",
-              endsAt: "2026-06-29T16:00:00.000Z"
+              startsAt: "2026-06-30T14:00:00.000Z",
+              endsAt: "2026-06-30T16:00:00.000Z"
             }))
           }
         : risk
     );
-    const summaries = buildHorizonSummaries({
-      flights: [flight({ scheduledTime: "2026-06-29T12:30:00.000+08:00" })],
-      weather: delayedWeather,
+
+    expect(
+      buildRouteWeatherMatches({
+        flights: [flight({ scheduledTime: "2026-06-29T12:30:00.000+08:00" })],
+        weather: delayedWeather,
+        now,
+        horizonHours: 12,
+        direction: "arrival"
+      })
+    ).toHaveLength(0);
+  });
+
+  it("builds the fixed +15 arrival situation table with in-air, on-land, and within-100km rows", () => {
+    const result = buildFlightSituationTable({
+      flights: [
+        flight({ id: "en-route", scheduledTime: "2026-06-29T12:30:00.000+08:00" }),
+        flight({ id: "within-100km", scheduledTime: "2026-06-29T12:05:00.000+08:00" }),
+        flight({ id: "on-land", scheduledTime: "2026-06-29T16:00:00.000+08:00" }),
+        flight({ id: "departure", direction: "departure", scheduledTime: "2026-06-29T12:30:00.000+08:00" })
+      ],
+      weather,
       now
     });
 
-    expect(summaries[0].reportedWeatherAirports).toHaveLength(0);
+    expect(result.hours).toHaveLength(16);
+    expect(result.hours.map((hour) => hour.label).slice(0, 4)).toEqual([
+      "T(now)",
+      "+1",
+      "+2",
+      "+3"
+    ]);
+    expect(result.rows.find((row) => row.id === "predicted-arrival-rate")?.values[0]).toBe(2);
+    expect(result.rows.find((row) => row.id === "Greater China-en-route")?.values[0]).toBe(1);
+    expect(result.rows.find((row) => row.id === "Greater China-within-100km")?.values[0]).toBe(1);
+    expect(result.rows.find((row) => row.id === "Greater China-on-land")?.values[0]).toBe(1);
+  });
+
+  it("derives deep convection cells from METAR now and TAF future periods", () => {
+    const convectiveWeather: AirportWeather[] = weather.map((risk) =>
+      risk.airportIata === "HKG"
+        ? {
+            ...risk,
+            metar: {
+              category: "reported",
+              label: "REPORTED WX",
+              reasons: ["TSRA: thunderstorms (TS), rain (RA)"],
+              weatherCodes: ["TSRA"],
+              observedAt: "2026-06-29T04:00:00.000Z",
+              reportType: "METAR",
+              windGustKt: 31
+            },
+            tafPeriods: [
+              {
+                startsAt: "2026-06-29T05:00:00.000Z",
+                endsAt: "2026-06-29T07:00:00.000Z",
+                probability: null,
+                category: "reported",
+                label: "REPORTED WX",
+                reasons: ["+SHRA: heavy (+), showers (SH), rain (RA)", "TEMPO"],
+                weatherCodes: ["+SHRA"],
+                changeIndicator: "TEMPO",
+                windGustKt: 35
+              }
+            ]
+          }
+        : risk
+    );
+    const result = buildFlightSituationTable({
+      flights: [],
+      weather: convectiveWeather,
+      now
+    });
+    const convection = result.rows.find((row) => row.id === "deep-convection");
+
+    expect(convection?.values[0]).toContain("TSRA");
+    expect(convection?.tones?.[0]).toBe("caution");
+    expect(convection?.values[1]).toContain("+SHRA");
+    expect(convection?.tones?.[1]).toBe("alert");
   });
 });

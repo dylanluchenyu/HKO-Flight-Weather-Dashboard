@@ -12,6 +12,7 @@ interface NoaaMetar {
   obsTime?: string | number;
   metarType?: string;
   wxString?: string | null;
+  wgst?: number | null;
 }
 
 interface NoaaTafForecast {
@@ -20,6 +21,7 @@ interface NoaaTafForecast {
   fcstChange?: string | null;
   probability?: number | null;
   wxString?: string | null;
+  wgst?: number | null;
 }
 
 interface NoaaTaf {
@@ -76,6 +78,10 @@ function toIso(value?: string | number): string | null {
       ? new Date(value < 10_000_000_000 ? value * 1000 : value)
       : new Date(value);
   return Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
+function toWindGustKt(value?: number | null): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function decodeWeatherGroup(rawGroup: string): string {
@@ -198,7 +204,8 @@ export function normalizeAirportWeather(args: {
         startsAt,
         endsAt,
         probability: forecast.probability ?? null,
-        changeIndicator: forecast.fcstChange ?? null
+        changeIndicator: forecast.fcstChange ?? null,
+        windGustKt: toWindGustKt(forecast.wgst)
       }
     ];
   });
@@ -217,7 +224,8 @@ export function normalizeAirportWeather(args: {
       ? {
           ...metarAssessment,
           observedAt: toIso(args.metar?.obsTime),
-          reportType: args.metar?.metarType ?? null
+          reportType: args.metar?.metarType ?? null,
+          windGustKt: toWindGustKt(args.metar?.wgst)
         }
       : null,
     tafPeriods,
@@ -296,7 +304,7 @@ export async function fetchWeatherForAirports(
 
   const tafIcaos = icaos.slice(0, 45);
   if (icaos.length > tafIcaos.length) {
-    warnings.push("TAF forecast lookup limited to first 45 priority airports for faster loading.");
+    warnings.push("TAF forecast lookup limited to first 45 weather-queried route airports for faster loading.");
   }
 
   let metars: NoaaMetar[] = [];
