@@ -402,7 +402,7 @@ function ArrivalRateChart({
 
   return (
     <section className="chart-wrap">
-      <div className="chart-title">{directionChartTitle(direction)} · HKT / UTC Z</div>
+      <div className="chart-title">{directionChartTitle(direction)} · HKT / UTC (Z)</div>
       <div className="bar-chart">
         {values.map((value, index) => (
           <div className="bar-slot" key={data.hours[index]?.label ?? index}>

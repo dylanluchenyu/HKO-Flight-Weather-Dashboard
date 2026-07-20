@@ -22,7 +22,7 @@ source-reported airport weather context.
   includes both.
 - Route-airport weather matches aggregated by airport, including source, codes,
   observed time, forecast period, and selected-window flight count.
-- Local Hong Kong time and UTC `Z` time on the hourly chart, with HKT generation
+- Local Hong Kong time and UTC `(Z)` time on the hourly chart, with HKT generation
   time on the situational-awareness table.
 - Route-airport groups for Greater China, Asia, the Middle East, Oceania,
   America, Africa, Europe, and unmapped/other locations.
