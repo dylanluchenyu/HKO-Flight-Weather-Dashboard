@@ -13,6 +13,8 @@ interface NoaaMetar {
   metarType?: string;
   wxString?: string | null;
   wgst?: number | null;
+  visib?: string | number | null;
+  clouds?: NoaaCloudLayer[];
 }
 
 interface NoaaTafForecast {
@@ -21,7 +23,17 @@ interface NoaaTafForecast {
   fcstChange?: string | null;
   probability?: number | null;
   wxString?: string | null;
+  wdir?: number | string | null;
+  wspd?: number | null;
   wgst?: number | null;
+  visib?: string | number | null;
+  clouds?: NoaaCloudLayer[];
+}
+
+interface NoaaCloudLayer {
+  cover?: string | null;
+  base?: number | null;
+  type?: string | null;
 }
 
 interface NoaaTaf {
@@ -82,6 +94,28 @@ function toIso(value?: string | number): string | null {
 
 function toWindGustKt(value?: number | null): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function toWindDirection(value?: number | string | null): number | string | null {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === "string" && value.trim()) {
+    return value.trim().toUpperCase();
+  }
+  return null;
+}
+
+function toWindSpeedKt(value?: number | null): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function normalizeClouds(clouds?: NoaaCloudLayer[]) {
+  return (clouds ?? []).map((cloud) => ({
+    cover: cloud.cover?.toUpperCase() ?? null,
+    baseFt: typeof cloud.base === "number" && Number.isFinite(cloud.base) ? cloud.base : null,
+    type: cloud.type?.toUpperCase() ?? null
+  }));
 }
 
 function decodeWeatherGroup(rawGroup: string): string {
@@ -179,6 +213,7 @@ export function normalizeAirportWeather(args: {
   airportIcao: string;
   metar?: NoaaMetar;
   taf?: NoaaTaf;
+  tafQueried?: boolean;
 }): AirportWeather {
   const metarAssessment = args.metar
     ? assessEncodedWeather(args.metar.wxString)
@@ -205,7 +240,12 @@ export function normalizeAirportWeather(args: {
         endsAt,
         probability: forecast.probability ?? null,
         changeIndicator: forecast.fcstChange ?? null,
-        windGustKt: toWindGustKt(forecast.wgst)
+        windDirectionDeg: toWindDirection(forecast.wdir),
+        windSpeedKt: toWindSpeedKt(forecast.wspd),
+        windGustKt: toWindGustKt(forecast.wgst),
+        visibility:
+          forecast.visib === undefined || forecast.visib === null ? null : String(forecast.visib),
+        clouds: normalizeClouds(forecast.clouds)
       }
     ];
   });
@@ -225,12 +265,19 @@ export function normalizeAirportWeather(args: {
           ...metarAssessment,
           observedAt: toIso(args.metar?.obsTime),
           reportType: args.metar?.metarType ?? null,
-          windGustKt: toWindGustKt(args.metar?.wgst)
+          windGustKt: toWindGustKt(args.metar?.wgst),
+          visibility:
+            args.metar?.visib === undefined || args.metar?.visib === null
+              ? null
+              : String(args.metar.visib),
+          clouds: normalizeClouds(args.metar?.clouds)
         }
       : null,
+    tafQueried: args.tafQueried ?? Boolean(args.taf),
     tafPeriods,
     rawMetar: args.metar?.rawOb ?? null,
     rawTaf: args.taf?.rawTAF ?? args.taf?.rawOb ?? null,
+    tafIssuedAt: toIso(args.taf?.issueTime),
     observedAt
   };
 }
@@ -333,7 +380,8 @@ export async function fetchWeatherForAirports(
       airportIata: airport.iata,
       airportIcao: airport.icao,
       metar: metarByIcao.get(airport.icao),
-      taf: tafByIcao.get(airport.icao)
+      taf: tafByIcao.get(airport.icao),
+      tafQueried: tafIcaos.includes(airport.icao)
     })
   );
 }

@@ -4,11 +4,12 @@ import { greatCircleRoute, HKG_AIRPORT } from "./geo";
 import {
   buildFlightSituationTable,
   buildHourlyArrivalTable,
+  buildRouteAirportTafTimelines,
   buildRouteAirportSummaries,
   buildRouteWeatherMatches,
   parseDashboardOptions
 } from "./dashboard";
-import type { AirportWeather, NormalizedFlight } from "./types";
+import type { AirportWeather, NormalizedFlight, WeatherForecastPeriod } from "./types";
 
 const now = new Date("2026-06-29T12:00:00+08:00");
 
@@ -33,6 +34,25 @@ function flight(overrides: Partial<NormalizedFlight>): NormalizedFlight {
   };
 }
 
+function tafPeriod(overrides: Partial<WeatherForecastPeriod> = {}): WeatherForecastPeriod {
+  return {
+    startsAt: "2026-06-29T04:00:00.000Z",
+    endsAt: "2026-06-29T20:00:00.000Z",
+    probability: null,
+    category: "none",
+    label: "NO REPORTED WX",
+    reasons: ["No encoded weather group in source data"],
+    weatherCodes: [],
+    changeIndicator: null,
+    windDirectionDeg: null,
+    windSpeedKt: null,
+    windGustKt: null,
+    visibility: null,
+    clouds: [],
+    ...overrides
+  };
+}
+
 const weather: AirportWeather[] = [
   {
     airportIata: "HKG",
@@ -48,23 +68,15 @@ const weather: AirportWeather[] = [
       weatherCodes: [],
       observedAt: "2026-06-29T04:00:00.000Z",
       reportType: "METAR",
-      windGustKt: null
+      windGustKt: null,
+      visibility: null,
+      clouds: []
     },
-    tafPeriods: [
-      {
-        startsAt: "2026-06-29T04:00:00.000Z",
-        endsAt: "2026-06-29T20:00:00.000Z",
-        probability: null,
-        category: "none",
-        label: "NO REPORTED WX",
-        reasons: ["No encoded weather group in source data"],
-        weatherCodes: [],
-        changeIndicator: null,
-        windGustKt: null
-      }
-    ],
+    tafQueried: true,
+    tafPeriods: [tafPeriod()],
     rawMetar: "VHHH 290400Z 09010KT CAVOK",
     rawTaf: null,
+    tafIssuedAt: "2026-06-29T04:00:00.000Z",
     observedAt: "2026-06-29T04:00:00.000Z"
   },
   {
@@ -76,20 +88,23 @@ const weather: AirportWeather[] = [
     weatherCodes: ["TSRA"],
     metar: null,
     tafPeriods: [
-      {
+      tafPeriod({
         startsAt: "2026-06-29T04:00:00.000Z",
         endsAt: "2026-06-29T10:00:00.000Z",
-        probability: null,
         category: "reported",
         label: "REPORTED WX",
         reasons: ["TSRA: thunderstorms (TS), rain (RA)"],
         weatherCodes: ["TSRA"],
-        changeIndicator: null,
-        windGustKt: null
-      }
+        windDirectionDeg: 90,
+        windSpeedKt: 12,
+        visibility: "4000",
+        clouds: [{ cover: "BKN", baseFt: 1200, type: null }]
+      })
     ],
+    tafQueried: true,
     rawMetar: null,
     rawTaf: "TAF RCTP 290400Z 2904/2910 09012KT 4000 TSRA BKN012",
+    tafIssuedAt: "2026-06-29T04:00:00.000Z",
     observedAt: "2026-06-29T04:00:00.000Z"
   }
 ];
@@ -233,6 +248,116 @@ describe("dashboard aggregation", () => {
     ).toHaveLength(0);
   });
 
+  it("builds hourly route-airport TAF timelines from structured forecast periods", () => {
+    const nrt = getAirport("NRT")!;
+    const tafWeather: AirportWeather[] = [
+      ...weather.map((risk) =>
+        risk.airportIata === "TPE"
+          ? {
+              ...risk,
+              rawTaf:
+                "TAF RCTP 290400Z 2904/2907 BECMG 34008KT TEMPO PROB30 4000 +SHRA BKN008 PROB40 FG",
+              tafPeriods: [
+                tafPeriod({
+                  startsAt: "2026-06-29T04:00:00.000Z",
+                  endsAt: "2026-06-29T05:00:00.000Z",
+                  changeIndicator: "BECMG",
+                  windDirectionDeg: 340,
+                  windSpeedKt: 8,
+                  visibility: "6+",
+                  clouds: [
+                    { cover: "FEW", baseFt: 2000, type: null },
+                    { cover: "BKN", baseFt: 3500, type: null }
+                  ]
+                }),
+                tafPeriod({
+                  startsAt: "2026-06-29T05:00:00.000Z",
+                  endsAt: "2026-06-29T06:00:00.000Z",
+                  probability: 30,
+                  category: "reported",
+                  label: "REPORTED WX",
+                  reasons: ["+SHRA: heavy (+), showers (SH), rain (RA)", "TEMPO", "PROB30"],
+                  weatherCodes: ["+SHRA"],
+                  changeIndicator: "TEMPO",
+                  windDirectionDeg: 90,
+                  windSpeedKt: 18,
+                  windGustKt: 35,
+                  visibility: "4000",
+                  clouds: [{ cover: "BKN", baseFt: 800, type: null }]
+                }),
+                tafPeriod({
+                  startsAt: "2026-06-29T06:00:00.000Z",
+                  endsAt: "2026-06-29T07:00:00.000Z",
+                  probability: 40,
+                  category: "reported",
+                  label: "REPORTED WX",
+                  reasons: ["FG: fog (FG)", "PROB40"],
+                  weatherCodes: ["FG"],
+                  changeIndicator: "PROB40",
+                  windDirectionDeg: "VRB",
+                  windSpeedKt: 4,
+                  visibility: "0800",
+                  clouds: [{ cover: "VV", baseFt: 200, type: null }]
+                })
+              ]
+            }
+          : risk
+      ),
+      {
+        airportIata: "NRT",
+        airportIcao: "RJAA",
+        category: "unknown",
+        label: "NO DATA",
+        reasons: ["TAF not queried"],
+        weatherCodes: [],
+        metar: null,
+        tafQueried: false,
+        tafPeriods: [],
+        rawMetar: null,
+        rawTaf: null,
+        tafIssuedAt: null,
+        observedAt: null
+      }
+    ];
+
+    const timelines = buildRouteAirportTafTimelines({
+      flights: [
+        flight({ id: "tpe-arrival", routeAirportIata: "TPE" }),
+        flight({
+          id: "nrt-departure",
+          direction: "departure",
+          routeAirportIata: "NRT",
+          routeAirport: nrt,
+          region: nrt.region,
+          route: greatCircleRoute(HKG_AIRPORT, nrt)
+        })
+      ],
+      weather: tafWeather,
+      now,
+      horizonHours: 6,
+      direction: "both"
+    });
+
+    expect(timelines.map((timeline) => timeline.airportIata)).toEqual(["TPE"]);
+    expect(timelines[0].cells).toHaveLength(6);
+    expect(timelines[0].cells[0]).toMatchObject({
+      tone: "normal",
+      summary: expect.stringContaining("BECMG")
+    });
+    expect(timelines[0].cells[0].summary).toContain("NSW");
+    expect(timelines[0].cells[0].summary).toContain("340/8kt");
+    expect(timelines[0].cells[0].summary).toContain("FEW020/BKN035");
+    expect(timelines[0].cells[1]).toMatchObject({
+      tone: "concern",
+      weatherCodes: ["+SHRA"]
+    });
+    expect(timelines[0].cells[1].summary).toContain("TEMPO PROB30");
+    expect(timelines[0].cells[1].summary).toContain("090/18G35kt");
+    expect(timelines[0].cells[1].summary).toContain("BKN008");
+    expect(timelines[0].cells[2].summary).toContain("PROB40");
+    expect(timelines[0].cells[2].summary).toContain("VRB/4kt");
+  });
+
   it("builds the fixed +15 arrival situation table with in-air, on-land, and within-100km rows", () => {
     const result = buildFlightSituationTable({
       flights: [
@@ -252,10 +377,69 @@ describe("dashboard aggregation", () => {
       "+2",
       "+3"
     ]);
+    expect(result.rows.slice(0, 3).map((row) => row.id)).toEqual([
+      "predicted-arrival-rate",
+      "deep-convection",
+      "hkg-taf-hourly-breakdown"
+    ]);
     expect(result.rows.find((row) => row.id === "predicted-arrival-rate")?.values[0]).toBe(2);
     expect(result.rows.find((row) => row.id === "Greater China-en-route")?.values[0]).toBe(1);
     expect(result.rows.find((row) => row.id === "Greater China-within-100km")?.values[0]).toBe(1);
     expect(result.rows.find((row) => row.id === "Greater China-on-land")?.values[0]).toBe(1);
+  });
+
+  it("limits the HKG TAF hourly row to significant weather elements", () => {
+    const tafWeather = weather.map((risk) =>
+      risk.airportIata === "HKG"
+        ? {
+            ...risk,
+            tafPeriods: [
+              tafPeriod({
+                startsAt: "2026-06-29T04:00:00.000Z",
+                endsAt: "2026-06-29T05:00:00.000Z",
+                category: "reported" as const,
+                label: "REPORTED WX",
+                reasons: ["SHRA: showers (SH), rain (RA)", "TEMPO"],
+                weatherCodes: ["SHRA"],
+                changeIndicator: "TEMPO",
+                windDirectionDeg: 90,
+                windSpeedKt: 18,
+                visibility: "6+",
+                clouds: [{ cover: "BKN", baseFt: 3000, type: null }]
+              }),
+              tafPeriod({
+                startsAt: "2026-06-29T05:00:00.000Z",
+                endsAt: "2026-06-29T06:00:00.000Z",
+                category: "reported" as const,
+                label: "REPORTED WX",
+                reasons: ["+SHRA: heavy (+), showers (SH), rain (RA)", "TEMPO"],
+                weatherCodes: ["+SHRA"],
+                changeIndicator: "TEMPO",
+                windDirectionDeg: 90,
+                windSpeedKt: 18,
+                windGustKt: 35,
+                visibility: "4000",
+                clouds: [{ cover: "BKN", baseFt: 800, type: null }]
+              })
+            ]
+          }
+        : risk
+    );
+
+    const result = buildFlightSituationTable({
+      flights: [],
+      weather: tafWeather,
+      now
+    });
+
+    const tafRow = result.rows.find((row) => row.id === "hkg-taf-hourly-breakdown");
+    expect(tafRow?.label).toBe("HKG TAF significant weather");
+    expect(tafRow?.values[0]).toBe("NIL");
+    expect(tafRow?.values[1]).toContain("+SHRA");
+    expect(tafRow?.values[1]).toContain("VIS 4km");
+    expect(tafRow?.values[1]).toContain("CIG 800ft");
+    expect(tafRow?.values[1]).toContain("G35");
+    expect(tafRow?.values[1]).not.toContain("TEMPO");
   });
 
   it("derives deep convection cells from METAR now and TAF future periods", () => {
@@ -270,20 +454,23 @@ describe("dashboard aggregation", () => {
               weatherCodes: ["TSRA"],
               observedAt: "2026-06-29T04:00:00.000Z",
               reportType: "METAR",
-              windGustKt: 31
+              windGustKt: 31,
+              visibility: "6+",
+              clouds: []
             },
             tafPeriods: [
-              {
+              tafPeriod({
                 startsAt: "2026-06-29T05:00:00.000Z",
                 endsAt: "2026-06-29T07:00:00.000Z",
-                probability: null,
                 category: "reported",
                 label: "REPORTED WX",
                 reasons: ["+SHRA: heavy (+), showers (SH), rain (RA)", "TEMPO"],
                 weatherCodes: ["+SHRA"],
                 changeIndicator: "TEMPO",
+                windDirectionDeg: 90,
+                windSpeedKt: 18,
                 windGustKt: 35
-              }
+              })
             ]
           }
         : risk

@@ -7,7 +7,8 @@ source-reported airport weather context.
 
 - Fixed `T(now)` to `+15` Flight Situational Awareness table for arriving flights,
   matching the operational table layout: predicted arrival rate, deep convection
-  status, and regional in-air/on-land/within-100km arrival counts.
+  status, HKG TAF significant weather, and regional in-air/on-land/within-100km
+  arrival counts.
 - Direction filter for inbound, outbound, or both directions. Combined mode
   includes arrivals and departures in the chart, summaries, airport watch list,
   and route-airport weather match panel. The situational-awareness table remains
@@ -17,13 +18,15 @@ source-reported airport weather context.
 - Deep convection status derived from VHHH METAR at `T(now)` and overlapping VHHH
   TAF periods for future columns. This is not an official alert feed or severity
   rating.
+- The HKG TAF hourly row only shows significant forecast elements: thunderstorm
+  or heavy weather codes, low visibility, low ceiling, or gusts of 30 kt or above.
 - Top 10 route airports by region for the selected window. Inbound mode lists
   arrival origins, outbound mode lists departure destinations, and combined mode
   includes both.
 - Route-airport weather matches aggregated by airport, including source, codes,
   observed time, forecast period, and selected-window flight count.
-- Local Hong Kong time and UTC `(Z)` time on the hourly chart, with HKT generation
-  time on the situational-awareness table.
+- Local Hong Kong time and UTC `(Z)` time on the hourly chart and on the
+  situational-awareness table timeslot header.
 - Route-airport groups for Greater China, Asia, the Middle East, Oceania,
   America, Africa, Europe, and unmapped/other locations.
 
@@ -55,8 +58,9 @@ npm run build
 
 - The dashboard auto-refreshes every 30 minutes and supports manual refresh.
 - The situational-awareness table is fixed to arrival traffic and always shows
-  `T(now)` through `+15`, independent of the selected 6/12/18/24/30h window used
-  by the other panels.
+  the next 16 hourly slots, independent of the selected 6/12/18/24/30h window
+  used by the other panels. The dashboard header shows actual HKT and UTC `(Z)`
+  start times instead of `+1`, `+2`, etc.
 - `Predicted flight arrival rate` is based on HKIA scheduled arrivals in each
   one-hour interval. It is a forecast from schedule data, not an actual landed
   count.
@@ -80,9 +84,8 @@ npm run build
   `DZ` drizzle, `BR` mist, `FG` fog, and `HZ` haze. Unknown codes remain visible
   verbatim instead of being assigned a dashboard-defined meaning.
 - TAF weather is evaluated only from AviationWeather's structured forecast
-  periods that overlap the relevant hour. `TEMPO`, `BECMG`, `FM`, and `PROBnn`
-  are preserved from the source. Raw report text is retained for reference but
-  is never scanned for hazard substrings.
+  periods that overlap the relevant hour. Raw report text is retained for
+  reference but is never scanned for hazard substrings.
 - Wind gust can trigger the source-backed deep-convection indicator when it reaches
   the table threshold, but it is not converted into an operational severity.
   Operational minima depend on information not present in this dataset, including

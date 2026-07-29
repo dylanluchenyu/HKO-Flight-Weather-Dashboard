@@ -17,7 +17,8 @@ export type FlightPhase =
   | "unknown";
 export type WeatherCategory = "unknown" | "none" | "reported";
 export type FlightSituationCellTone = "plain" | "nil" | "caution" | "alert";
-export type FlightSituationRowKind = "rate" | "convection" | "phase";
+export type FlightSituationRowKind = "rate" | "convection" | "taf" | "phase";
+export type TafTimelineCellTone = "normal" | "concern" | "no-data" | "not-queried";
 export type RouteAirportWeatherStatus =
   | "metar"
   | "taf"
@@ -49,6 +50,14 @@ export interface WeatherObservation extends WeatherAssessment {
   observedAt: string | null;
   reportType: string | null;
   windGustKt: number | null;
+  visibility: string | null;
+  clouds: WeatherCloudLayer[];
+}
+
+export interface WeatherCloudLayer {
+  cover: string | null;
+  baseFt: number | null;
+  type: string | null;
 }
 
 export interface WeatherForecastPeriod extends WeatherAssessment {
@@ -56,16 +65,22 @@ export interface WeatherForecastPeriod extends WeatherAssessment {
   endsAt: string;
   probability: number | null;
   changeIndicator: string | null;
+  windDirectionDeg: number | string | null;
+  windSpeedKt: number | null;
   windGustKt: number | null;
+  visibility: string | null;
+  clouds: WeatherCloudLayer[];
 }
 
 export interface AirportWeather extends WeatherAssessment {
   airportIata: string;
   airportIcao: string;
   metar: WeatherObservation | null;
+  tafQueried: boolean;
   tafPeriods: WeatherForecastPeriod[];
   rawMetar: string | null;
   rawTaf: string | null;
+  tafIssuedAt: string | null;
   observedAt: string | null;
 }
 
@@ -144,6 +159,29 @@ export interface RouteWeatherMatch {
   sources: RouteWeatherSource[];
 }
 
+export interface RouteAirportTafCell {
+  hourOffset: number;
+  startsAt: string;
+  endsAt: string;
+  tone: TafTimelineCellTone;
+  summary: string;
+  details: string[];
+  weatherCodes: string[];
+  changeIndicator: string | null;
+  probability: number | null;
+}
+
+export interface RouteAirportTafTimeline {
+  airportIata: string;
+  airport: AirportMetadata | null;
+  flightCount: number;
+  arrivalCount: number;
+  departureCount: number;
+  rawTaf: string | null;
+  issuedAt: string | null;
+  cells: RouteAirportTafCell[];
+}
+
 export interface DashboardData {
   generatedAt: string;
   cacheExpiresAt: string;
@@ -154,6 +192,7 @@ export interface DashboardData {
   flightSituationRows: FlightSituationRow[];
   routeAirportSummaries: RouteAirportSummary[];
   routeWeatherMatches: RouteWeatherMatch[];
+  routeAirportTafTimelines: RouteAirportTafTimeline[];
   flights: NormalizedFlight[];
   airports: AirportMetadata[];
   weather: AirportWeather[];

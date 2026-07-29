@@ -1,6 +1,6 @@
 "use client";
 
-import { startTransition, useEffect, useRef, useState } from "react";
+import { Fragment, startTransition, useEffect, useRef, useState } from "react";
 import type {
   DashboardError,
   DashboardData,
@@ -27,6 +27,7 @@ const REGION_ORDER: Array<Region | "Other"> = [
   "Europe",
   "Other"
 ];
+const TAF_DECODE_URL = "https://www.hko.gov.hk/en/aviat/taf_decode.htm";
 
 function formatDateTime(value?: string | null): string {
   if (!value) {
@@ -64,6 +65,15 @@ function formatUtcClock(value?: string | null): string {
     minute: "2-digit",
     hour12: false
   }).format(new Date(value))}Z`;
+}
+
+function situationTimeslotLabel(hour: DashboardData["situationHours"][number] | undefined): string {
+  if (!hour) {
+    return "";
+  }
+  return `${formatClock(hour.startsAt)}-${formatClock(hour.endsAt)} HKT / ${formatUtcClock(
+    hour.startsAt
+  )}-${formatUtcClock(hour.endsAt)}`;
 }
 
 function weatherStatusClass(status: RouteAirportWeatherStatus): string {
@@ -184,9 +194,28 @@ function sourceLabel(source: RouteWeatherSource): string {
   return `${source.kind} ${codes} · ${sourceTime(source)}${notes ? ` · ${notes}` : ""}`;
 }
 
+function tafTimelineCellClass(cell: DashboardData["routeAirportTafTimelines"][number]["cells"][number]) {
+  return `taf-cell taf-cell-${cell.tone}`;
+}
+
+function tafTimelineCellTitle(
+  cell: DashboardData["routeAirportTafTimelines"][number]["cells"][number]
+) {
+  return [
+    `${formatClock(cell.startsAt)}-${formatClock(cell.endsAt)} HKT / ${formatUtcClock(
+      cell.startsAt
+    )}-${formatUtcClock(cell.endsAt)}`,
+    cell.summary.replace(/\n/g, " · "),
+    ...cell.details
+  ].join("\n");
+}
+
 function situationCellClass(row: DashboardData["flightSituationRows"][number], index: number) {
   if (row.kind === "phase") {
     return "situation-cell situation-cell-phase";
+  }
+  if (row.kind === "taf") {
+    return "situation-cell situation-cell-taf";
   }
   const tone = row.tones?.[index] ?? "plain";
   return `situation-cell situation-cell-${tone}`;
@@ -198,13 +227,24 @@ function situationCellTitle(
   hour: DashboardData["situationHours"][number] | undefined
 ) {
   const label = String(value);
-  const time = hour ? `${hour.label} · ${formatClock(hour.startsAt)} HKT` : "";
-  const prefix = row.kind === "convection" && label !== "NIL" ? "Full weather indicator: " : "";
-  return [time, `${prefix}${label}`].filter(Boolean).join("\n");
+  const time = hour ? `${hour.label} · ${situationTimeslotLabel(hour)}` : "";
+  const prefix =
+    row.kind === "convection"
+      ? label !== "NIL"
+        ? "Full weather indicator: "
+        : ""
+      : row.kind === "taf"
+        ? "HKG TAF significant weather: "
+        : "";
+  const printable = label.replace(/\n/g, " · ");
+  return [time, `${prefix}${printable}`].filter(Boolean).join("\n");
 }
 
 function renderSituationCell(row: DashboardData["flightSituationRows"][number], value: string | number) {
   const label = String(value);
+  if (row.kind === "taf") {
+    return label;
+  }
   if (row.kind !== "convection" || label === "NIL" || label === "NO DATA") {
     return label;
   }
@@ -244,10 +284,18 @@ function FlightSituationTable({ data }: { data: DashboardData }) {
           <table className="situation-table">
             <thead>
               <tr>
-                <th className="situation-row-label" />
+                <th className="situation-row-label situation-timeslot-title">
+                  predicted arrival timeslot
+                  <small>HKT / UTC (Z)</small>
+                </th>
                 {data.situationHours.map((hour) => (
-                  <th key={hour.label} title={`${formatClock(hour.startsAt)} HKT`}>
-                    {hour.label}
+                  <th
+                    className="situation-timeslot"
+                    key={hour.label}
+                    title={situationTimeslotLabel(hour)}
+                  >
+                    <span>{formatClock(hour.startsAt)}</span>
+                    <small>{formatUtcClock(hour.startsAt)}</small>
                   </th>
                 ))}
               </tr>
@@ -280,8 +328,20 @@ function FlightSituationTable({ data }: { data: DashboardData }) {
           distance, not live aircraft positions.
         </span>
         <span>
+          "En route from [region]" means the flight is estimated to be airborne and more than
+          100 km from Hong Kong.
+        </span>
+        <span>
           Deep convection status uses VHHH METAR for T(now) and overlapping TAF periods for future
           columns; it is not an official alert or severity rating.
+        </span>
+        <span>
+          HKG TAF significant weather only shows material forecast elements: thunderstorm/heavy
+          weather codes, low visibility, low ceiling, or gusts of 30 kt or above.{" "}
+          <a href={TAF_DECODE_URL} target="_blank" rel="noreferrer">
+            HKO TAF decode
+          </a>
+          .
         </span>
       </div>
     </section>
@@ -482,6 +542,92 @@ function TopAirportsPanel({
   );
 }
 
+function RouteAirportTafPanel({
+  data,
+  horizon
+}: {
+  data: DashboardData;
+  horizon: HorizonFilter;
+}) {
+  const timelines = data.routeAirportTafTimelines ?? [];
+
+  return (
+    <section className="panel taf-panel">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">Route-airport TAF forecast</p>
+          <h2>Hourly Route Airport TAF</h2>
+          <p className="section-description">
+            Hour-by-hour TAF for weather-watch route airports in the {windowLabel(horizon)}.
+            Cells show change group, weather code or NSW, wind/gust, visibility, and low cloud.
+          </p>
+        </div>
+        <span className="table-note">HKT / UTC (Z)</span>
+      </div>
+      {timelines.length === 0 ? (
+        <p className="empty taf-empty">No TAF-queried route airports in this window.</p>
+      ) : (
+        <div className="taf-scroll">
+          <table className="taf-table">
+            <thead>
+              <tr>
+                <th className="taf-airport-heading">Airport</th>
+                {data.hours.map((hour) => (
+                  <th key={hour.label}>
+                    <span>{hour.label}</span>
+                    <small>{formatClock(hour.startsAt)} HKT</small>
+                    <small>{formatUtcClock(hour.startsAt)}</small>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {timelines.map((timeline) => (
+                <Fragment key={timeline.airportIata}>
+                  <tr>
+                    <th className="taf-airport">
+                      <strong>{airportDisplayName(timeline)}</strong>
+                      <small>
+                        {airportMeta(timeline)} · {timeline.flightCount} flights ·{" "}
+                        {directionCountText(timeline)}
+                      </small>
+                      <small>
+                        TAF issued {timeline.issuedAt ? formatUtcClock(timeline.issuedAt) : "NO DATA"}
+                      </small>
+                    </th>
+                    {timeline.cells.map((cell) => (
+                      <td
+                        className={tafTimelineCellClass(cell)}
+                        key={`${timeline.airportIata}-${cell.hourOffset}`}
+                        title={tafTimelineCellTitle(cell)}
+                      >
+                        {cell.summary}
+                      </td>
+                    ))}
+                  </tr>
+                  <tr className="taf-raw-row">
+                    <th className="taf-airport taf-raw-label">Raw TAF</th>
+                    <td colSpan={data.hours.length}>
+                      <details>
+                        <summary>Show raw TAF for {timeline.airportIata}</summary>
+                        <code>{timeline.rawTaf ?? "No raw TAF returned."}</code>
+                      </details>
+                    </td>
+                  </tr>
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="taf-note">
+        TAF is decoded from official AviationWeather structured forecast periods. It is a forecast,
+        not a live observation or operational warning.
+      </p>
+    </section>
+  );
+}
+
 function RouteAirportWeatherMatches({
   data,
   horizon
@@ -606,6 +752,7 @@ export default function DashboardClient() {
         <div>
           <p className="eyebrow">Hong Kong International Airport · VHHH</p>
           <h1>HKIA Flight Weather Dashboard</h1>
+          <p className="acknowledgement">Dashboard being developed by Dylan.</p>
         </div>
         <div className="status-card">
           <div>
@@ -651,6 +798,7 @@ export default function DashboardClient() {
           <ArrivalRateChart data={data} direction={direction} />
           <SummaryStrip data={data} direction={direction} horizon={horizon} />
           <TopAirportsPanel data={data} direction={direction} horizon={horizon} />
+          <RouteAirportTafPanel data={data} horizon={horizon} />
           <FlightSituationTable data={data} />
           <RouteAirportWeatherMatches data={data} horizon={horizon} />
         </>

@@ -20,6 +20,9 @@ import type {
   FlightDirection,
   NormalizedFlight,
   Region,
+  RouteAirportTafCell,
+  RouteAirportTafTimeline,
+  WeatherForecastPeriod,
   RouteAirportSummary,
   RouteAirportWeatherStatus,
   RouteWeatherMatch,
@@ -39,6 +42,12 @@ const DEFAULT_OPTIONS: DashboardOptions = {
 };
 const HORIZON_OPTIONS: DashboardOptions["horizonHours"][] = [6, 12, 18, 24, 30];
 const SITUATION_HOURS = 16;
+const SIGNIFICANT_GUST_KT = 30;
+const STRONG_GUST_KT = 35;
+const LOW_VISIBILITY_KM = 5;
+const VERY_LOW_VISIBILITY_KM = 1.5;
+const LOW_CEILING_FT = 1500;
+const VERY_LOW_CEILING_FT = 500;
 const BASE_SITUATION_REGIONS: Region[] = [
   "Greater China",
   "Asia",
@@ -289,6 +298,129 @@ function buildSituationHours(now: Date): DashboardData["situationHours"] {
   });
 }
 
+type SignificantWeatherSource = {
+  weatherCodes: string[];
+  windGustKt: number | null;
+  visibility: string | number | null;
+  clouds: WeatherForecastPeriod["clouds"];
+};
+
+function uniqueCodes(codes: string[]): string[] {
+  return [...new Set(codes.map((code) => code.toUpperCase().trim()).filter(Boolean))];
+}
+
+function isDeepConvectionCode(code: string): boolean {
+  const normalized = code.toUpperCase().trim();
+  return normalized.startsWith("+") || normalized.includes("TS") || /(^|VC)(SQ|FC)/.test(normalized);
+}
+
+function isSignificantWeatherCode(code: string): boolean {
+  const normalized = code.toUpperCase().trim();
+  return (
+    normalized.startsWith("+") ||
+    /(TS|FG|SQ|FC|GR|GS|FZ|SS|DS|VA)/.test(normalized)
+  );
+}
+
+function parseVisibilityKm(value: string | number | null): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const normalized = String(value).trim().toUpperCase();
+  if (!normalized || normalized === "CAVOK") {
+    return null;
+  }
+
+  const mixedFraction = normalized.match(/^(\d+)\s+(\d+)\/(\d+)/);
+  if (mixedFraction) {
+    const whole = Number(mixedFraction[1]);
+    const numerator = Number(mixedFraction[2]);
+    const denominator = Number(mixedFraction[3]);
+    if (denominator !== 0) {
+      return (whole + numerator / denominator) * 1.609344;
+    }
+  }
+
+  const fraction = normalized.match(/^(\d+)\/(\d+)/);
+  if (fraction) {
+    const numerator = Number(fraction[1]);
+    const denominator = Number(fraction[2]);
+    if (denominator !== 0) {
+      return (numerator / denominator) * 1.609344;
+    }
+  }
+
+  const numericMatch = normalized.match(/\d+(?:\.\d+)?/);
+  if (!numericMatch) {
+    return null;
+  }
+
+  const numeric = Number(numericMatch[0]);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+
+  return numeric > 50 ? numeric / 1000 : numeric * 1.609344;
+}
+
+function formatVisibilityKm(km: number): string {
+  const rounded = Math.round(km * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}km`;
+}
+
+function lowestCeilingFt(sources: SignificantWeatherSource[]): number | null {
+  const ceilingCovers = new Set(["BKN", "OVC", "VV"]);
+  const ceilings = sources
+    .flatMap((source) => source.clouds)
+    .filter((cloud) => cloud.baseFt !== null && ceilingCovers.has(cloud.cover ?? ""))
+    .map((cloud) => cloud.baseFt as number);
+
+  return ceilings.length > 0 ? Math.min(...ceilings) : null;
+}
+
+function formatCeilingFt(feet: number): string {
+  return `${Math.round(feet / 100) * 100}ft`;
+}
+
+function significantWeatherSummary(
+  sources: SignificantWeatherSource[]
+): { label: string; tone: FlightSituationCellTone } {
+  const codes = uniqueCodes(sources.flatMap((source) => source.weatherCodes)).filter(
+    isSignificantWeatherCode
+  );
+  const gust = Math.max(
+    0,
+    ...sources
+      .map((source) => source.windGustKt ?? 0)
+      .filter((value) => Number.isFinite(value))
+  );
+  const visibilities = sources
+    .map((source) => parseVisibilityKm(source.visibility))
+    .filter((value): value is number => value !== null);
+  const lowestVisibility = visibilities.length > 0 ? Math.min(...visibilities) : null;
+  const ceiling = lowestCeilingFt(sources);
+  const parts = [
+    ...codes.slice(0, 2),
+    lowestVisibility !== null && lowestVisibility < LOW_VISIBILITY_KM
+      ? `VIS ${formatVisibilityKm(lowestVisibility)}`
+      : "",
+    ceiling !== null && ceiling < LOW_CEILING_FT ? `CIG ${formatCeilingFt(ceiling)}` : "",
+    gust >= SIGNIFICANT_GUST_KT ? `G${gust}` : ""
+  ].filter(Boolean);
+
+  if (parts.length === 0) {
+    return { label: "NIL", tone: "nil" };
+  }
+
+  const alert =
+    codes.some((code) => code.startsWith("+") || /(SQ|FC)/.test(code)) ||
+    gust >= STRONG_GUST_KT ||
+    (lowestVisibility !== null && lowestVisibility < VERY_LOW_VISIBILITY_KM) ||
+    (ceiling !== null && ceiling < VERY_LOW_CEILING_FT);
+  return { label: parts.join("\n"), tone: alert ? "alert" : "caution" };
+}
+
 function deepConvectionStatus(args: {
   weather: AirportWeather | undefined;
   startsAt: Date;
@@ -305,6 +437,8 @@ function deepConvectionStatus(args: {
           {
             weatherCodes: args.weather.metar.weatherCodes,
             windGustKt: args.weather.metar.windGustKt,
+            visibility: args.weather.metar.visibility,
+            clouds: args.weather.metar.clouds,
             changeIndicator: null,
             probability: null
           }
@@ -320,7 +454,7 @@ function deepConvectionStatus(args: {
     ...new Set(
       sources
         .flatMap((source) => source.weatherCodes)
-        .filter((code) => /(^|\+|VC)(TS|SH)/.test(code.toUpperCase()))
+        .filter(isDeepConvectionCode)
     )
   ];
   const maxGust = Math.max(
@@ -329,7 +463,7 @@ function deepConvectionStatus(args: {
       .map((source) => source.windGustKt ?? 0)
       .filter((gust) => Number.isFinite(gust))
   );
-  const gustHit = maxGust >= 30;
+  const gustHit = maxGust >= SIGNIFICANT_GUST_KT;
 
   if (codes.length === 0 && !gustHit) {
     return { label: "NIL", tone: "nil" };
@@ -355,7 +489,45 @@ function deepConvectionStatus(args: {
   const strongCode = codes.some((code) => code.startsWith("+"));
   return {
     label: parts.join(" "),
-    tone: strongCode || maxGust >= 35 ? "alert" : "caution"
+    tone: strongCode || maxGust >= STRONG_GUST_KT ? "alert" : "caution"
+  };
+}
+
+function tafChangePriority(period: WeatherForecastPeriod): number {
+  const indicator = period.changeIndicator?.toUpperCase() ?? "";
+  if (indicator.startsWith("FM")) {
+    return 0;
+  }
+  if (indicator === "BECMG") {
+    return 1;
+  }
+  if (indicator === "TEMPO") {
+    return 2;
+  }
+  if (indicator.startsWith("PROB")) {
+    return 3;
+  }
+  return 4;
+}
+
+function tafHourlyBreakdown(args: {
+  weather: AirportWeather | undefined;
+  startsAt: Date;
+  endsAt: Date;
+}): { label: string } {
+  if (!args.weather) {
+    return { label: "NO DATA" };
+  }
+
+  const overlapping = args.weather.tafPeriods.filter((period) =>
+    overlaps(period, args.startsAt, args.endsAt)
+  );
+  if (overlapping.length === 0) {
+    return { label: "NO DATA" };
+  }
+
+  return {
+    label: significantWeatherSummary(overlapping).label
   };
 }
 
@@ -409,6 +581,19 @@ export function buildFlightSituationTable(args: {
     tones: convectionCells.map((cell) => cell.tone)
   };
 
+  const tafRow: FlightSituationRow = {
+    id: "hkg-taf-hourly-breakdown",
+    label: "HKG TAF significant weather",
+    kind: "taf",
+    values: hours.map((hour) =>
+      tafHourlyBreakdown({
+        weather: hkgWeather,
+        startsAt: new Date(hour.startsAt),
+        endsAt: new Date(hour.endsAt)
+      }).label
+    )
+  };
+
   const optionalRegions: Region[] = ["Africa", "Other"];
   const regions = [
     ...BASE_SITUATION_REGIONS,
@@ -460,7 +645,7 @@ export function buildFlightSituationTable(args: {
 
   return {
     hours,
-    rows: [arrivalRateRow, convectionRow, ...phaseRows]
+    rows: [arrivalRateRow, convectionRow, tafRow, ...phaseRows]
   };
 }
 
@@ -636,6 +821,154 @@ export function buildRouteWeatherMatches(args: {
     .sort((a, b) => b.flightCount - a.flightCount || a.airportIata.localeCompare(b.airportIata));
 }
 
+function formatTafWind(period: WeatherForecastPeriod, maxGust: number): string {
+  if (period.windDirectionDeg === null || period.windSpeedKt === null) {
+    return "wind --";
+  }
+
+  const direction =
+    typeof period.windDirectionDeg === "number"
+      ? String(period.windDirectionDeg).padStart(3, "0")
+      : period.windDirectionDeg;
+  const gust = maxGust >= 1 ? `G${maxGust}` : "";
+  return `${direction}/${period.windSpeedKt}${gust}kt`;
+}
+
+function formatTafClouds(period: WeatherForecastPeriod): string {
+  const clouds = [...period.clouds]
+    .sort((a, b) => (a.baseFt ?? Number.MAX_SAFE_INTEGER) - (b.baseFt ?? Number.MAX_SAFE_INTEGER))
+    .slice(0, 2)
+    .map((cloud) => {
+      if (!cloud.cover) {
+        return "";
+      }
+      const base =
+        cloud.baseFt === null ? "" : String(Math.round(cloud.baseFt / 100)).padStart(3, "0");
+      return `${cloud.cover}${base}${cloud.type ?? ""}`;
+    })
+    .filter(Boolean);
+  return clouds.length > 0 ? clouds.join("/") : "cloud --";
+}
+
+function tafTimelineCell(args: {
+  weather: AirportWeather | undefined;
+  hour: DashboardData["hours"][number];
+}): RouteAirportTafCell {
+  const base = {
+    hourOffset: args.hour.hourOffset,
+    startsAt: args.hour.startsAt,
+    endsAt: args.hour.endsAt,
+    weatherCodes: [],
+    changeIndicator: null,
+    probability: null
+  };
+
+  if (!args.weather || !args.weather.tafQueried) {
+    return {
+      ...base,
+      tone: "not-queried",
+      summary: "Not queried",
+      details: ["TAF was not queried for this airport."]
+    };
+  }
+
+  const startsAt = new Date(args.hour.startsAt);
+  const endsAt = new Date(args.hour.endsAt);
+  const overlapping = args.weather.tafPeriods.filter((period) =>
+    overlaps(period, startsAt, endsAt)
+  );
+
+  if (overlapping.length === 0) {
+    return {
+      ...base,
+      tone: "no-data",
+      summary: "NO DATA",
+      details: ["No structured TAF forecast period overlaps this hour."]
+    };
+  }
+
+  const assessment = tafWeatherAt(args.weather, startsAt, endsAt);
+  const primary = [...overlapping].sort(
+    (a, b) =>
+      tafChangePriority(a) - tafChangePriority(b) ||
+      new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime()
+  )[0];
+  const maxGust = Math.max(0, ...overlapping.map((period) => period.windGustKt ?? 0));
+  const changeIndicator = primary.changeIndicator?.toUpperCase() ?? "BASE";
+  const probabilityLabel =
+    primary.probability === null || primary.probability === undefined
+      ? null
+      : `PROB${primary.probability}`;
+  const changeParts = [
+    changeIndicator,
+    probabilityLabel && probabilityLabel !== changeIndicator ? probabilityLabel : null
+  ].filter((part): part is string => Boolean(part));
+  const weatherLabel =
+    assessment.category === "reported" && assessment.weatherCodes.length > 0
+      ? assessment.weatherCodes.slice(0, 2).join("/")
+      : "NSW";
+  const windLabel = formatTafWind(primary, maxGust);
+  const visibilityLabel = primary.visibility ? `vis ${primary.visibility}` : "vis --";
+  const cloudLabel = formatTafClouds(primary);
+  const tone = assessment.category === "reported" || maxGust >= 30 ? "concern" : "normal";
+  const summary = [
+    changeParts.join(" "),
+    weatherLabel,
+    windLabel,
+    visibilityLabel,
+    cloudLabel
+  ].join("\n");
+
+  return {
+    ...base,
+    tone,
+    summary,
+    details: [
+      `Period ${primary.startsAt} to ${primary.endsAt}`,
+      `Weather ${weatherLabel}`,
+      `Wind ${windLabel}`,
+      `Visibility ${visibilityLabel}`,
+      `Cloud ${cloudLabel}`
+    ],
+    weatherCodes: assessment.weatherCodes,
+    changeIndicator: primary.changeIndicator,
+    probability: primary.probability
+  };
+}
+
+export function buildRouteAirportTafTimelines(args: {
+  flights: NormalizedFlight[];
+  weather: AirportWeather[];
+  now: Date;
+  horizonHours: DashboardOptions["horizonHours"];
+  direction: DashboardOptions["direction"];
+}): RouteAirportTafTimeline[] {
+  const hours = buildHourlyBuckets(args.now, args.horizonHours);
+  const weatherByIata = getWeatherByIata(args.weather);
+  const scoped = currentWindowFlights(args);
+
+  return [...routeCounts(scoped).entries()]
+    .map(([airportIata, value]) => {
+      const airportWeather = weatherByIata.get(airportIata);
+      if (!airportWeather?.tafQueried) {
+        return null;
+      }
+
+      return {
+        airportIata,
+        airport: value.airport,
+        flightCount: value.count,
+        arrivalCount: value.arrivalCount,
+        departureCount: value.departureCount,
+        rawTaf: airportWeather.rawTaf,
+        issuedAt: airportWeather.tafIssuedAt,
+        cells: hours.map((hour) => tafTimelineCell({ weather: airportWeather, hour }))
+      };
+    })
+    .filter((timeline): timeline is RouteAirportTafTimeline => Boolean(timeline))
+    .sort((a, b) => b.flightCount - a.flightCount || a.airportIata.localeCompare(b.airportIata));
+}
+
 export function parseDashboardOptions(url: URL): DashboardOptions {
   const direction = url.searchParams.get("direction");
   const traffic = url.searchParams.get("traffic");
@@ -761,6 +1094,13 @@ export async function getDashboardData(
       direction: options.direction
     }),
     routeWeatherMatches: buildRouteWeatherMatches({
+      flights,
+      weather,
+      now,
+      horizonHours: options.horizonHours,
+      direction: options.direction
+    }),
+    routeAirportTafTimelines: buildRouteAirportTafTimelines({
       flights,
       weather,
       now,
