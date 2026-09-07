@@ -15,6 +15,9 @@ source-reported airport weather context.
   fixed to arrivals.
 - Current-window summaries for all selected passenger/cargo flights, all route
   airports, and route airports matched to METAR/TAF weather.
+- AirLabs-backed arrival-origin operational insights: origin-airport departure
+  delay/cancellation rates, affected-flight counts, totals, Past 6 Hours context,
+  and hourly route-airport ranking.
 - Deep convection status derived from VHHH METAR at `T(now)` and overlapping VHHH
   TAF periods for future columns. This is not an official alert feed or severity
   rating.
@@ -34,6 +37,9 @@ source-reported airport weather context.
 
 - HKIA public flight REST endpoint for passenger/cargo arrivals and departures.
 - NOAA AviationWeather API for METAR/TAF weather reports.
+- AirLabs Flight Schedules and Flight Delay APIs for optional origin-airport
+  operational disruption statistics. Configure `AIRLABS_API_KEY`; if it is not
+  set, operational panels remain visible but show unavailable data.
 - OurAirports public airport database as a fallback for IATA to ICAO/coordinate
   mapping.
 
@@ -45,6 +51,12 @@ npm run dev
 ```
 
 Open `http://localhost:3000`.
+
+Optional operational statistics:
+
+```bash
+AIRLABS_API_KEY=your_key npm run dev
+```
 
 ## Verification
 
@@ -71,6 +83,17 @@ npm run build
   dashboard keeps all route airports in flight totals and rankings, while querying
   weather for top route airports by selected-window flight count. Airports outside
   that weather-query coverage are shown as `Not queried`, not as `NO DATA`.
+- Operational insights use AirLabs airport-wide departures for HKIA arrival
+  origin airports. They are not limited to origin-to-HKG flights, so they provide
+  context on whether the origin airport itself is disrupted.
+- AirLabs schedules provide the denominator for operational rates. Delayed flights
+  use a 30-minute threshold, and cancelled flights are derived from cancellation
+  status in the provider data.
+- Past 6 Hours summarizes AirLabs records returned inside the preceding six-hour
+  window; complete historical coverage is not verified. With no usable sample,
+  the UI explicitly shows `Past 6h unavailable`.
+- AviationWeather `visib` values are shown with explicit units as statute miles
+  plus converted kilometres, for example `VIS 1.99 sm / 3.2 km`.
 - Route geometry and schedule-based flight phase fields remain available in the
   API for future GIS map work, but they are not part of the default cleaned
   dashboard display.

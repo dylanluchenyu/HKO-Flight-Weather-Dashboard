@@ -1,3 +1,8 @@
+import {
+  fetchAirLabsAirportOperationalData,
+  type AirLabsAirportOperationalData,
+  type AirLabsOperationalFlight
+} from "./airlabs";
 import { fetchAirportFallbacks } from "./airportFallback";
 import { estimateFlightPhase, FLIGHT_LOOKBACK_HOURS } from "./flightPhase";
 import { distanceKm, greatCircleRoute, HKG_AIRPORT } from "./geo";
@@ -19,6 +24,9 @@ import type {
   FlightSituationRow,
   FlightDirection,
   NormalizedFlight,
+  OperationalRiskLevel,
+  OperationalTrend,
+  OperationalWindowStats,
   Region,
   RouteAirportTafCell,
   RouteAirportTafTimeline,
@@ -42,12 +50,19 @@ const DEFAULT_OPTIONS: DashboardOptions = {
 };
 const HORIZON_OPTIONS: DashboardOptions["horizonHours"][] = [6, 12, 18, 24, 30];
 const SITUATION_HOURS = 16;
+const PAST_OPERATIONAL_HOURS = 6;
+const OPERATIONAL_DELAY_THRESHOLD_MINUTES = 30;
 const SIGNIFICANT_GUST_KT = 30;
 const STRONG_GUST_KT = 35;
 const LOW_VISIBILITY_KM = 5;
 const VERY_LOW_VISIBILITY_KM = 1.5;
 const LOW_CEILING_FT = 1500;
 const VERY_LOW_CEILING_FT = 500;
+const HIGH_CANCELLATION_RATE = 10;
+const HIGH_DELAY_RATE = 50;
+const HIGH_AFFECTED_FLIGHTS = 5;
+const MEDIUM_DELAY_RATE = 25;
+const MEDIUM_AFFECTED_FLIGHTS = 2;
 const BASE_SITUATION_REGIONS: Region[] = [
   "Greater China",
   "Asia",
@@ -124,12 +139,20 @@ function prioritizeAirportsForWeather(
 ): AirportMetadata[] {
   const counts = new Map<string, number>([["HKG", Number.MAX_SAFE_INTEGER]]);
   for (const flight of flights) {
-    counts.set(flight.routeAirportIata, (counts.get(flight.routeAirportIata) ?? 0) + 1);
+    if (flight.routeAirport) {
+      counts.set(flight.routeAirportIata, (counts.get(flight.routeAirportIata) ?? 0) + 1);
+    }
   }
+  const airportByIata = new Map(airports.map((airport) => [airport.iata, airport]));
 
-  return [...airports]
-    .sort((a, b) => (counts.get(b.iata) ?? 0) - (counts.get(a.iata) ?? 0))
-    .slice(0, limit);
+  return [...counts.entries()]
+    .map(([iata, count]) => ({ airport: airportByIata.get(iata), count }))
+    .filter((entry): entry is { airport: AirportMetadata; count: number } =>
+      Boolean(entry.airport)
+    )
+    .sort((a, b) => b.count - a.count || a.airport.iata.localeCompare(b.airport.iata))
+    .slice(0, limit)
+    .map((entry) => entry.airport);
 }
 
 function getWeatherByIata(weather: AirportWeather[]): Map<string, AirportWeather> {
@@ -311,7 +334,12 @@ function uniqueCodes(codes: string[]): string[] {
 
 function isDeepConvectionCode(code: string): boolean {
   const normalized = code.toUpperCase().trim();
-  return normalized.startsWith("+") || normalized.includes("TS") || /(^|VC)(SQ|FC)/.test(normalized);
+  return (
+    normalized.startsWith("+") ||
+    normalized.includes("TS") ||
+    normalized.includes("SH") ||
+    /(^|VC)(SQ|FC)/.test(normalized)
+  );
 }
 
 function isSignificantWeatherCode(code: string): boolean {
@@ -322,7 +350,14 @@ function isSignificantWeatherCode(code: string): boolean {
   );
 }
 
-function parseVisibilityKm(value: string | number | null): number | null {
+type VisibilityDisplay = {
+  source: string;
+  statuteMiles: number;
+  km: number;
+  plus: boolean;
+};
+
+function parseVisibilityDisplay(value: string | number | null): VisibilityDisplay | null {
   if (!value) {
     return null;
   }
@@ -338,7 +373,13 @@ function parseVisibilityKm(value: string | number | null): number | null {
     const numerator = Number(mixedFraction[2]);
     const denominator = Number(mixedFraction[3]);
     if (denominator !== 0) {
-      return (whole + numerator / denominator) * 1.609344;
+      const statuteMiles = whole + numerator / denominator;
+      return {
+        source: normalized,
+        statuteMiles,
+        km: statuteMiles * 1.609344,
+        plus: normalized.includes("+")
+      };
     }
   }
 
@@ -347,7 +388,13 @@ function parseVisibilityKm(value: string | number | null): number | null {
     const numerator = Number(fraction[1]);
     const denominator = Number(fraction[2]);
     if (denominator !== 0) {
-      return (numerator / denominator) * 1.609344;
+      const statuteMiles = numerator / denominator;
+      return {
+        source: normalized,
+        statuteMiles,
+        km: statuteMiles * 1.609344,
+        plus: normalized.includes("+")
+      };
     }
   }
 
@@ -361,12 +408,30 @@ function parseVisibilityKm(value: string | number | null): number | null {
     return null;
   }
 
-  return numeric > 50 ? numeric / 1000 : numeric * 1.609344;
+  return {
+    source: normalized,
+    statuteMiles: numeric,
+    km: numeric * 1.609344,
+    plus: normalized.includes("+")
+  };
 }
 
-function formatVisibilityKm(km: number): string {
+function parseVisibilityKm(value: string | number | null): number | null {
+  return parseVisibilityDisplay(value)?.km ?? null;
+}
+
+function formatKm(km: number): string {
   const rounded = Math.round(km * 10) / 10;
-  return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)}km`;
+  return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)} km`;
+}
+
+function formatVisibility(value: string | number | null): string {
+  const parsed = parseVisibilityDisplay(value);
+  if (!parsed) {
+    return "VIS --";
+  }
+  const kmLabel = formatKm(parsed.km);
+  return `VIS ${parsed.source} sm / ${parsed.plus ? kmLabel.replace(" km", "+ km") : kmLabel}`;
 }
 
 function lowestCeilingFt(sources: SignificantWeatherSource[]): number | null {
@@ -396,14 +461,18 @@ function significantWeatherSummary(
       .filter((value) => Number.isFinite(value))
   );
   const visibilities = sources
-    .map((source) => parseVisibilityKm(source.visibility))
-    .filter((value): value is number => value !== null);
-  const lowestVisibility = visibilities.length > 0 ? Math.min(...visibilities) : null;
+    .map((source) => ({
+      source: source.visibility,
+      km: parseVisibilityKm(source.visibility)
+    }))
+    .filter((value): value is { source: string | number | null; km: number } => value.km !== null)
+    .sort((a, b) => a.km - b.km);
+  const lowestVisibility = visibilities[0] ?? null;
   const ceiling = lowestCeilingFt(sources);
   const parts = [
     ...codes.slice(0, 2),
-    lowestVisibility !== null && lowestVisibility < LOW_VISIBILITY_KM
-      ? `VIS ${formatVisibilityKm(lowestVisibility)}`
+    lowestVisibility !== null && lowestVisibility.km < LOW_VISIBILITY_KM
+      ? formatVisibility(lowestVisibility.source)
       : "",
     ceiling !== null && ceiling < LOW_CEILING_FT ? `CIG ${formatCeilingFt(ceiling)}` : "",
     gust >= SIGNIFICANT_GUST_KT ? `G${gust}` : ""
@@ -416,7 +485,7 @@ function significantWeatherSummary(
   const alert =
     codes.some((code) => code.startsWith("+") || /(SQ|FC)/.test(code)) ||
     gust >= STRONG_GUST_KT ||
-    (lowestVisibility !== null && lowestVisibility < VERY_LOW_VISIBILITY_KM) ||
+    (lowestVisibility !== null && lowestVisibility.km < VERY_LOW_VISIBILITY_KM) ||
     (ceiling !== null && ceiling < VERY_LOW_CEILING_FT);
   return { label: parts.join("\n"), tone: alert ? "alert" : "caution" };
 }
@@ -547,11 +616,16 @@ export function buildFlightSituationTable(args: {
 }): { hours: DashboardData["situationHours"]; rows: FlightSituationRow[] } {
   const hours = buildSituationHours(args.now);
   const arrivalFlights = args.flights.filter((flight) => flight.direction === "arrival");
+  const tableWindowStart = new Date(hours[0].startsAt);
+  const tableWindowEnd = new Date(hours.at(-1)?.endsAt ?? hours[0].endsAt);
+  const tableWindowArrivalFlights = arrivalFlights.filter((flight) =>
+    inWindow(flight, tableWindowStart, tableWindowEnd)
+  );
   const weatherByIata = getWeatherByIata(args.weather);
   const hkgWeather = weatherByIata.get("HKG");
   const snapshots = hours.map((hour) => {
     const at = new Date(hour.startsAt);
-    return arrivalFlights.map((flight) => ({
+    return tableWindowArrivalFlights.map((flight) => ({
       flight,
       phase: phaseAt(flight, at)
     }));
@@ -731,6 +805,414 @@ function weatherStatus(
   return { status: "no-data", weatherCodes: [] };
 }
 
+function operationalUnavailableStats(
+  startsAt: Date,
+  endsAt: Date,
+  reason: string
+): OperationalWindowStats {
+  return {
+    status: "unavailable",
+    windowStart: startsAt.toISOString(),
+    windowEnd: endsAt.toISOString(),
+    totalFlights: 0,
+    delayedFlights: 0,
+    cancelledFlights: 0,
+    affectedFlights: 0,
+    delayRate: null,
+    cancellationRate: null,
+    unavailableReason: reason
+  };
+}
+
+function operationalFlightKey(flight: AirLabsOperationalFlight): string {
+  return [
+    flight.flightIata ?? flight.flightIcao ?? "UNKNOWN",
+    flight.depIata ?? "DEP",
+    flight.arrIata ?? "ARR",
+    flight.depTimeTs ?? flight.arrTimeTs ?? "TIME"
+  ].join("|");
+}
+
+function operationalFlightTime(flight: AirLabsOperationalFlight): Date | null {
+  const timestamp = flight.depTimeTs ?? flight.arrTimeTs;
+  if (timestamp === null) {
+    return null;
+  }
+  const date = new Date(timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp);
+  return Number.isFinite(date.getTime()) ? date : null;
+}
+
+function operationalFlightInWindow(
+  flight: AirLabsOperationalFlight,
+  startsAt: Date,
+  endsAt: Date
+): boolean {
+  const time = operationalFlightTime(flight);
+  return Boolean(time && time >= startsAt && time < endsAt);
+}
+
+function isCancelledStatus(status: string | null): boolean {
+  return /cancel/i.test(status ?? "");
+}
+
+function isDelayedFlight(flight: AirLabsOperationalFlight): boolean {
+  const minutes =
+    flight.delayedMinutes ?? flight.depDelayedMinutes ?? flight.arrDelayedMinutes ?? 0;
+  return minutes >= OPERATIONAL_DELAY_THRESHOLD_MINUTES;
+}
+
+function buildOperationalWindowStats(args: {
+  raw: AirLabsAirportOperationalData | undefined;
+  startsAt: Date;
+  endsAt: Date;
+}): OperationalWindowStats {
+  if (!args.raw) {
+    return operationalUnavailableStats(args.startsAt, args.endsAt, "AirLabs data not requested.");
+  }
+  if (args.raw.unavailableReason) {
+    return operationalUnavailableStats(args.startsAt, args.endsAt, args.raw.unavailableReason);
+  }
+
+  const schedules = args.raw.schedules.filter((flight) =>
+    operationalFlightInWindow(flight, args.startsAt, args.endsAt)
+  );
+  if (schedules.length === 0) {
+    return operationalUnavailableStats(
+      args.startsAt,
+      args.endsAt,
+      "No AirLabs schedules in this window."
+    );
+  }
+
+  const scheduleKeys = new Set(schedules.map(operationalFlightKey));
+  const cancelledKeys = new Set(
+    schedules.filter((flight) => isCancelledStatus(flight.status)).map(operationalFlightKey)
+  );
+  const delayedKeys = new Set([
+    ...schedules.filter(isDelayedFlight).map(operationalFlightKey),
+    ...args.raw.delays
+      .filter((flight) => operationalFlightInWindow(flight, args.startsAt, args.endsAt))
+      .filter(isDelayedFlight)
+      .map(operationalFlightKey)
+  ]);
+  const affectedKeys = new Set(
+    [...delayedKeys, ...cancelledKeys].filter((key) => scheduleKeys.has(key))
+  );
+  const totalFlights = scheduleKeys.size;
+  const delayedFlights = [...delayedKeys].filter((key) => scheduleKeys.has(key)).length;
+  const cancelledFlights = cancelledKeys.size;
+
+  return {
+    status: "available",
+    windowStart: args.startsAt.toISOString(),
+    windowEnd: args.endsAt.toISOString(),
+    totalFlights,
+    delayedFlights,
+    cancelledFlights,
+    affectedFlights: affectedKeys.size,
+    delayRate: totalFlights > 0 ? (delayedFlights / totalFlights) * 100 : 0,
+    cancellationRate: totalFlights > 0 ? (cancelledFlights / totalFlights) * 100 : 0
+  };
+}
+
+function affectedRate(stats: OperationalWindowStats): number | null {
+  return stats.status === "available" && stats.totalFlights > 0
+    ? (stats.affectedFlights / stats.totalFlights) * 100
+    : null;
+}
+
+function operationalTrend(
+  current: OperationalWindowStats,
+  past: OperationalWindowStats
+): OperationalTrend {
+  const currentRate = affectedRate(current);
+  const pastRate = affectedRate(past);
+  if (currentRate === null || pastRate === null) {
+    return "unavailable";
+  }
+  if (currentRate - pastRate >= 5) {
+    return "worse";
+  }
+  if (pastRate - currentRate >= 5) {
+    return "recovering";
+  }
+  if (currentRate > 0 && pastRate > 0) {
+    return "persistent";
+  }
+  return "stable";
+}
+
+function aggregateOperationalStats(
+  stats: OperationalWindowStats[],
+  startsAt: Date,
+  endsAt: Date
+): OperationalWindowStats {
+  const available = stats.filter((item) => item.status === "available");
+  if (available.length === 0) {
+    return operationalUnavailableStats(startsAt, endsAt, "No available AirLabs airport stats.");
+  }
+  const totalFlights = available.reduce((sum, item) => sum + item.totalFlights, 0);
+  const delayedFlights = available.reduce((sum, item) => sum + item.delayedFlights, 0);
+  const cancelledFlights = available.reduce((sum, item) => sum + item.cancelledFlights, 0);
+  const affectedFlights = available.reduce((sum, item) => sum + item.affectedFlights, 0);
+  return {
+    status: "available",
+    windowStart: startsAt.toISOString(),
+    windowEnd: endsAt.toISOString(),
+    totalFlights,
+    delayedFlights,
+    cancelledFlights,
+    affectedFlights,
+    delayRate: totalFlights > 0 ? (delayedFlights / totalFlights) * 100 : 0,
+    cancellationRate: totalFlights > 0 ? (cancelledFlights / totalFlights) * 100 : 0
+  };
+}
+
+function weatherForRanking(
+  weather: AirportWeather | undefined,
+  startsAt: Date,
+  endsAt: Date,
+  useMetar: boolean
+): {
+  visibilityLabel: string;
+  visibilityKm: number | null;
+  weatherCodes: string[];
+  tone: FlightSituationCellTone;
+} {
+  if (!weather) {
+    return {
+      visibilityLabel: "VIS --",
+      visibilityKm: null,
+      weatherCodes: [],
+      tone: "plain"
+    };
+  }
+
+  const sources = useMetar && weather.metar
+    ? [
+        {
+          weatherCodes: weather.metar.weatherCodes,
+          windGustKt: weather.metar.windGustKt,
+          visibility: weather.metar.visibility,
+          clouds: weather.metar.clouds
+        }
+      ]
+    : weather.tafPeriods.filter((period) => overlaps(period, startsAt, endsAt));
+  const visibility = sources
+    .map((source) => ({
+      source: source.visibility,
+      km: parseVisibilityKm(source.visibility)
+    }))
+    .filter((value): value is { source: string | null; km: number } => value.km !== null)
+    .sort((a, b) => a.km - b.km)[0];
+  const significant = sources.length > 0 ? significantWeatherSummary(sources) : null;
+
+  return {
+    visibilityLabel: visibility ? formatVisibility(visibility.source) : "VIS --",
+    visibilityKm: visibility?.km ?? null,
+    weatherCodes: uniqueCodes(sources.flatMap((source) => source.weatherCodes)),
+    tone: significant?.tone ?? "plain"
+  };
+}
+
+function riskLevel(args: {
+  stats: OperationalWindowStats;
+  weatherTone: FlightSituationCellTone;
+  visibilityKm: number | null;
+}): { level: OperationalRiskLevel; reasons: string[] } {
+  if (args.stats.status !== "available") {
+    return {
+      level: "unavailable",
+      reasons: [args.stats.unavailableReason ?? "Operational data unavailable"]
+    };
+  }
+
+  const reasons: string[] = [];
+  if ((args.stats.cancellationRate ?? 0) >= HIGH_CANCELLATION_RATE) {
+    reasons.push(`cancel ${Math.round(args.stats.cancellationRate ?? 0)}%`);
+  }
+  if ((args.stats.delayRate ?? 0) >= HIGH_DELAY_RATE) {
+    reasons.push(`delay ${Math.round(args.stats.delayRate ?? 0)}%`);
+  }
+  if (args.stats.affectedFlights >= HIGH_AFFECTED_FLIGHTS) {
+    reasons.push(`${args.stats.affectedFlights} affected`);
+  }
+  if (args.weatherTone === "alert") {
+    reasons.push("alert weather");
+  }
+  if (args.visibilityKm !== null && args.visibilityKm < VERY_LOW_VISIBILITY_KM) {
+    reasons.push(`VIS ${formatKm(args.visibilityKm)}`);
+  }
+  if (reasons.length > 0) {
+    return { level: "high", reasons };
+  }
+
+  if ((args.stats.cancellationRate ?? 0) > 0) {
+    reasons.push(`cancel ${Math.round(args.stats.cancellationRate ?? 0)}%`);
+  }
+  if ((args.stats.delayRate ?? 0) >= MEDIUM_DELAY_RATE) {
+    reasons.push(`delay ${Math.round(args.stats.delayRate ?? 0)}%`);
+  }
+  if (args.stats.affectedFlights >= MEDIUM_AFFECTED_FLIGHTS) {
+    reasons.push(`${args.stats.affectedFlights} affected`);
+  }
+  if (args.weatherTone === "caution") {
+    reasons.push("weather watch");
+  }
+  if (args.visibilityKm !== null && args.visibilityKm < LOW_VISIBILITY_KM) {
+    reasons.push(`VIS ${formatKm(args.visibilityKm)}`);
+  }
+  if (reasons.length > 0) {
+    return { level: "medium", reasons };
+  }
+
+  return { level: "low", reasons: ["No threshold exceeded"] };
+}
+
+export function buildOperationalDashboardData(args: {
+  originFlights: NormalizedFlight[];
+  weather: AirportWeather[];
+  airLabsByIata: Map<string, AirLabsAirportOperationalData>;
+  now: Date;
+  hours: DashboardData["hours"];
+}): Pick<
+  DashboardData,
+  "arrivalOriginOperationalInsights" | "operationalTotals" | "hourlyRouteAirportRanking"
+> {
+  const startsAt = args.now;
+  const endsAt = new Date(args.hours.at(-1)?.endsAt ?? addHours(args.now, 1).toISOString());
+  const pastStartsAt = addHours(args.now, -PAST_OPERATIONAL_HOURS);
+  const pastEndsAt = args.now;
+  const weatherByIata = getWeatherByIata(args.weather);
+  const originCounts = routeCounts(args.originFlights);
+
+  const insights = [...originCounts.entries()]
+    .map(([airportIata, value]) => {
+      const raw = args.airLabsByIata.get(airportIata);
+      const current = buildOperationalWindowStats({ raw, startsAt, endsAt });
+      const past6 = buildOperationalWindowStats({
+        raw,
+        startsAt: pastStartsAt,
+        endsAt: pastEndsAt
+      });
+      return {
+        airportIata,
+        airport: value.airport,
+        routeFlightCount: value.arrivalCount,
+        current,
+        past6,
+        trend: operationalTrend(current, past6)
+      };
+    })
+    .sort((a, b) => {
+      const affectedDelta = b.current.affectedFlights - a.current.affectedFlights;
+      return affectedDelta !== 0 ? affectedDelta : a.airportIata.localeCompare(b.airportIata);
+    });
+
+  const currentAggregate = aggregateOperationalStats(
+    insights.map((item) => item.current),
+    startsAt,
+    endsAt
+  );
+  const pastAggregate = aggregateOperationalStats(
+    insights.map((item) => item.past6),
+    pastStartsAt,
+    pastEndsAt
+  );
+  const availableAirports = insights.filter((item) => item.current.status === "available").length;
+  const totals = {
+    provider: "AirLabs" as const,
+    status: currentAggregate.status,
+    windowStart: startsAt.toISOString(),
+    windowEnd: endsAt.toISOString(),
+    pastWindowStart: pastStartsAt.toISOString(),
+    pastWindowEnd: pastEndsAt.toISOString(),
+    totalAirports: insights.length,
+    availableAirports,
+    unavailableAirports: insights.length - availableAirports,
+    totalFlights: currentAggregate.totalFlights,
+    delayedFlights: currentAggregate.delayedFlights,
+    cancelledFlights: currentAggregate.cancelledFlights,
+    affectedFlights: currentAggregate.affectedFlights,
+    affectedAirports: insights.filter((item) => item.current.affectedFlights > 0).length,
+    affectedRoutes: insights.filter((item) => item.current.affectedFlights > 0).length,
+    delayRate: currentAggregate.delayRate,
+    cancellationRate: currentAggregate.cancellationRate,
+    past6Status: pastAggregate.status,
+    past6TotalFlights: pastAggregate.totalFlights,
+    past6DelayedFlights: pastAggregate.delayedFlights,
+    past6CancelledFlights: pastAggregate.cancelledFlights,
+    past6AffectedFlights: pastAggregate.affectedFlights,
+    trend: operationalTrend(currentAggregate, pastAggregate),
+    unavailableReason:
+      currentAggregate.status === "unavailable" ? currentAggregate.unavailableReason : undefined
+  };
+
+  const ranking = args.hours.flatMap((hour) => {
+    const bucketFlights = findBucketFlights(args.originFlights, hour);
+    return [...routeCounts(bucketFlights).entries()].map(([airportIata, value]) => {
+      const startsAt = new Date(hour.startsAt);
+      const endsAt = new Date(hour.endsAt);
+      const stats = buildOperationalWindowStats({
+        raw: args.airLabsByIata.get(airportIata),
+        startsAt,
+        endsAt
+      });
+      const weather = weatherForRanking(
+        weatherByIata.get(airportIata),
+        startsAt,
+        endsAt,
+        hour.hourOffset === 0
+      );
+      const risk = riskLevel({
+        stats,
+        weatherTone: weather.tone,
+        visibilityKm: weather.visibilityKm
+      });
+      return {
+        id: `${hour.hourOffset}-${airportIata}`,
+        hourOffset: hour.hourOffset,
+        startsAt: hour.startsAt,
+        endsAt: hour.endsAt,
+        airportIata,
+        airport: value.airport,
+        route: `${airportIata} → HKG`,
+        flightCount: value.arrivalCount,
+        totalFlights: stats.totalFlights,
+        delayedFlights: stats.delayedFlights,
+        cancelledFlights: stats.cancelledFlights,
+        affectedFlights: stats.affectedFlights,
+        delayRate: stats.delayRate,
+        cancellationRate: stats.cancellationRate,
+        visibilityLabel: weather.visibilityLabel,
+        visibilityKm: weather.visibilityKm,
+        weatherCodes: weather.weatherCodes,
+        riskLevel: risk.level,
+        riskReasons: risk.reasons
+      };
+    });
+  });
+
+  const riskRank: Record<OperationalRiskLevel, number> = {
+    high: 0,
+    medium: 1,
+    low: 2,
+    unavailable: 3
+  };
+
+  return {
+    arrivalOriginOperationalInsights: insights,
+    operationalTotals: totals,
+    hourlyRouteAirportRanking: ranking.sort(
+      (a, b) =>
+        riskRank[a.riskLevel] - riskRank[b.riskLevel] ||
+        b.affectedFlights - a.affectedFlights ||
+        b.flightCount - a.flightCount ||
+        a.airportIata.localeCompare(b.airportIata)
+    )
+  };
+}
+
 export function buildRouteAirportSummaries(args: {
   flights: NormalizedFlight[];
   weather: AirportWeather[];
@@ -908,7 +1390,7 @@ function tafTimelineCell(args: {
       ? assessment.weatherCodes.slice(0, 2).join("/")
       : "NSW";
   const windLabel = formatTafWind(primary, maxGust);
-  const visibilityLabel = primary.visibility ? `vis ${primary.visibility}` : "vis --";
+  const visibilityLabel = formatVisibility(primary.visibility);
   const cloudLabel = formatTafClouds(primary);
   const tone = assessment.category === "reported" || maxGust >= 30 ? "concern" : "normal";
   const summary = [
@@ -1055,19 +1537,42 @@ export async function getDashboardData(
     [HKG_AIRPORT, ...routeAirports].map((airport) => [airport.iata, airport])
   );
   const airports = [...airportMap.values()];
-  const weatherQueryFlights = currentWindowFlights({
+  const selectedWindowFlights = currentWindowFlights({
     flights,
     now,
     horizonHours: options.horizonHours,
     direction: options.direction
   });
+  const originArrivalFlights = currentWindowFlights({
+    flights,
+    now,
+    horizonHours: options.horizonHours,
+    direction: "arrival"
+  });
+  const weatherQueryFlights = [
+    ...new Map(
+      [...selectedWindowFlights, ...originArrivalFlights].map((flight) => [flight.id, flight])
+    ).values()
+  ];
   const weatherQueryAirports = prioritizeAirportsForWeather(weatherQueryFlights, airports);
   if (airports.length > weatherQueryAirports.length) {
     warnings.push(
-      `Weather lookup focused on ${weatherQueryAirports.length} top route airports out of ${airports.length} mapped airports; all route airports remain included in flight totals.`
+      `Weather lookup covered ${weatherQueryAirports.length} airports selected by current-window traffic out of ${airports.length} mapped airports loaded for the wider internal data window; flight totals still include every selected-window route airport.`
     );
   }
-  const weather = await fetchWeatherForAirports(weatherQueryAirports, warnings);
+  const arrivalOriginAirports = [
+    ...routeCounts(originArrivalFlights).values()
+  ]
+    .map((value) => value.airport)
+    .filter((airport): airport is AirportMetadata => Boolean(airport));
+  const [weather, airLabsByIata] = await Promise.all([
+    fetchWeatherForAirports(weatherQueryAirports, warnings),
+    fetchAirLabsAirportOperationalData({
+      airports: arrivalOriginAirports,
+      warnings,
+      delayThresholdMinutes: OPERATIONAL_DELAY_THRESHOLD_MINUTES
+    })
+  ]);
   const hourly = buildHourlyArrivalTable({
     flights,
     weather,
@@ -1076,6 +1581,13 @@ export async function getDashboardData(
     direction: options.direction
   });
   const situation = buildFlightSituationTable({ flights, weather, now });
+  const operational = buildOperationalDashboardData({
+    originFlights: originArrivalFlights,
+    weather,
+    airLabsByIata,
+    now,
+    hours: hourly.hours
+  });
   const expiresAt = addMinutes(now, CACHE_MINUTES);
 
   const data: DashboardData = {
@@ -1107,6 +1619,7 @@ export async function getDashboardData(
       horizonHours: options.horizonHours,
       direction: options.direction
     }),
+    ...operational,
     flights,
     airports,
     weather,

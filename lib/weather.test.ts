@@ -25,6 +25,26 @@ describe("source-backed METAR/TAF weather categories", () => {
     expect(weather.metar?.clouds).toEqual([{ cover: "BKN", baseFt: 1200, type: null }]);
   });
 
+  it("expands less common HKO weather codes instead of leaving unexplained fragments", () => {
+    const weather = normalizeAirportWeather({
+      airportIata: "TST",
+      airportIcao: "TEST",
+      metar: {
+        icaoId: "TEST",
+        rawOb: "TEST 290800Z 18012KT 3000 BLDU TSGS",
+        wxString: "BLDU TSGS"
+      }
+    });
+
+    expect(weather.reasons).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("blowing (BL), widespread dust (DU)"),
+        expect.stringContaining("thunderstorms (TS), small hail or snow pellets (GS)")
+      ])
+    );
+    expect(weather.reasons.join(" ")).not.toContain("unexpanded code");
+  });
+
   it("does not turn wind, visibility, or cloud values into an invented impact level", () => {
     const weather = normalizeAirportWeather({
       airportIata: "NRT",

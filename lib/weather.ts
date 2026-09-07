@@ -44,19 +44,40 @@ interface NoaaTaf {
   fcsts?: NoaaTafForecast[];
 }
 
+const WEATHER_QUERY_BATCH_SIZE = 45;
+
 // Meanings below are taken directly from the HKO METAR/SPECI and TAF decoding
 // guides. Unknown codes remain visible verbatim instead of being reclassified.
 const HKO_CODE_MEANINGS: Record<string, string> = {
   MI: "shallow",
   BC: "patches",
-  SH: "showers",
   PR: "partial",
+  DR: "low drifting",
+  BL: "blowing",
+  SH: "showers",
   TS: "thunderstorms",
+  FZ: "freezing",
   DZ: "drizzle",
   RA: "rain",
+  SN: "snow",
+  SG: "snow grains",
+  IC: "ice crystals",
+  PL: "ice pellets",
+  GR: "hail",
+  GS: "small hail or snow pellets",
+  UP: "unknown precipitation",
   BR: "mist",
   FG: "fog",
-  HZ: "haze"
+  FU: "smoke",
+  VA: "volcanic ash",
+  DU: "widespread dust",
+  SA: "sand",
+  HZ: "haze",
+  PO: "dust or sand whirls",
+  SQ: "squalls",
+  FC: "funnel cloud, tornado, or waterspout",
+  SS: "sandstorm",
+  DS: "duststorm"
 };
 const HKO_CODES = Object.keys(HKO_CODE_MEANINGS).sort((a, b) => b.length - a.length);
 
@@ -340,6 +361,26 @@ async function fetchNoaa<T>(
   }
 }
 
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+async function fetchNoaaBatched<T>(
+  endpoint: "metar" | "taf",
+  icaos: string[],
+  timeoutMs = 8000
+): Promise<T[]> {
+  const batches = chunkArray(icaos, WEATHER_QUERY_BATCH_SIZE);
+  const results = await Promise.all(
+    batches.map((batch) => fetchNoaa<T>(endpoint, batch, timeoutMs))
+  );
+  return results.flat();
+}
+
 export async function fetchWeatherForAirports(
   airports: AirportMetadata[],
   warnings: string[]
@@ -351,14 +392,16 @@ export async function fetchWeatherForAirports(
 
   const tafIcaos = icaos.slice(0, 45);
   if (icaos.length > tafIcaos.length) {
-    warnings.push("TAF forecast lookup limited to first 45 weather-queried route airports for faster loading.");
+    warnings.push(
+      "TAF forecast lookup limited to first 45 weather-queried route airports for faster loading."
+    );
   }
 
   let metars: NoaaMetar[] = [];
   let tafs: NoaaTaf[] = [];
   const [metarResult, tafResult] = await Promise.allSettled([
-    fetchNoaa<NoaaMetar>("metar", icaos, 8000),
-    fetchNoaa<NoaaTaf>("taf", tafIcaos, 8000)
+    fetchNoaaBatched<NoaaMetar>("metar", icaos, 8000),
+    fetchNoaaBatched<NoaaTaf>("taf", tafIcaos, 8000)
   ]);
 
   if (metarResult.status === "fulfilled") {

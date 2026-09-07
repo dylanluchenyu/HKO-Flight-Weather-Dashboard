@@ -27,6 +27,9 @@ export type RouteAirportWeatherStatus =
   | "no-data"
   | "not-queried";
 export type WeatherSourceKind = "METAR" | "TAF";
+export type OperationalDataStatus = "available" | "unavailable";
+export type OperationalTrend = "worse" | "recovering" | "persistent" | "stable" | "unavailable";
+export type OperationalRiskLevel = "high" | "medium" | "low" | "unavailable";
 
 export interface AirportMetadata {
   iata: string;
@@ -182,6 +185,77 @@ export interface RouteAirportTafTimeline {
   cells: RouteAirportTafCell[];
 }
 
+export interface OperationalWindowStats {
+  status: OperationalDataStatus;
+  windowStart: string;
+  windowEnd: string;
+  totalFlights: number;
+  delayedFlights: number;
+  cancelledFlights: number;
+  affectedFlights: number;
+  delayRate: number | null;
+  cancellationRate: number | null;
+  unavailableReason?: string;
+}
+
+export interface ArrivalOriginOperationalInsight {
+  airportIata: string;
+  airport: AirportMetadata | null;
+  routeFlightCount: number;
+  current: OperationalWindowStats;
+  past6: OperationalWindowStats;
+  trend: OperationalTrend;
+}
+
+export interface OperationalTotals {
+  provider: "AirLabs";
+  status: OperationalDataStatus;
+  windowStart: string;
+  windowEnd: string;
+  pastWindowStart: string;
+  pastWindowEnd: string;
+  totalAirports: number;
+  availableAirports: number;
+  unavailableAirports: number;
+  totalFlights: number;
+  delayedFlights: number;
+  cancelledFlights: number;
+  affectedFlights: number;
+  affectedAirports: number;
+  affectedRoutes: number;
+  delayRate: number | null;
+  cancellationRate: number | null;
+  past6Status: OperationalDataStatus;
+  past6TotalFlights: number;
+  past6DelayedFlights: number;
+  past6CancelledFlights: number;
+  past6AffectedFlights: number;
+  trend: OperationalTrend;
+  unavailableReason?: string;
+}
+
+export interface HourlyRouteAirportRankingItem {
+  id: string;
+  hourOffset: number;
+  startsAt: string;
+  endsAt: string;
+  airportIata: string;
+  airport: AirportMetadata | null;
+  route: string;
+  flightCount: number;
+  totalFlights: number;
+  delayedFlights: number;
+  cancelledFlights: number;
+  affectedFlights: number;
+  delayRate: number | null;
+  cancellationRate: number | null;
+  visibilityLabel: string;
+  visibilityKm: number | null;
+  weatherCodes: string[];
+  riskLevel: OperationalRiskLevel;
+  riskReasons: string[];
+}
+
 export interface DashboardData {
   generatedAt: string;
   cacheExpiresAt: string;
@@ -193,6 +267,9 @@ export interface DashboardData {
   routeAirportSummaries: RouteAirportSummary[];
   routeWeatherMatches: RouteWeatherMatch[];
   routeAirportTafTimelines: RouteAirportTafTimeline[];
+  arrivalOriginOperationalInsights: ArrivalOriginOperationalInsight[];
+  operationalTotals: OperationalTotals;
+  hourlyRouteAirportRanking: HourlyRouteAirportRankingItem[];
   flights: NormalizedFlight[];
   airports: AirportMetadata[];
   weather: AirportWeather[];
