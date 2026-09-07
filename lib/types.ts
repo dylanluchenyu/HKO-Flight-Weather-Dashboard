@@ -208,7 +208,7 @@ export interface ArrivalOriginOperationalInsight {
 }
 
 export interface OperationalTotals {
-  provider: "AirLabs";
+  provider: "Flightradar24";
   status: OperationalDataStatus;
   windowStart: string;
   windowEnd: string;

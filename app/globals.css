@@ -61,6 +61,89 @@ input {
   place-items: center;
 }
 
+.dashboard-disclosure {
+  margin: 16px 0;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.dashboard-disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 20px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.dashboard-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.dashboard-disclosure > summary:hover {
+  background: var(--surface2);
+}
+
+.dashboard-disclosure > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -3px;
+}
+
+.disclosure-arrow {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.dashboard-disclosure[open] > summary .disclosure-arrow {
+  transform: rotate(90deg);
+}
+
+.dashboard-disclosure[open] > summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.disclosure-title {
+  min-width: 0;
+}
+
+.disclosure-title h2 {
+  margin: 0;
+  font-size: 17px;
+  overflow-wrap: anywhere;
+}
+
+.disclosure-title small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.disclosure-body > section {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.disclosure-body > section > .section-heading h2,
+.disclosure-body > .top30-list > h3,
+.disclosure-body > section > .chart-title {
+  display: none;
+}
+
+.provider-source-help {
+  margin: 0 0 16px;
+}
+
+.provider-source-help a {
+  color: var(--accent);
+}
+
 .loading-card {
   padding: 1rem 1.25rem;
   border: 1px solid var(--border);

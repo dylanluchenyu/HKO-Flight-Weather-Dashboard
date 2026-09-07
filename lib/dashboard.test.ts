@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { getAirport } from "./airports";
 import { greatCircleRoute, HKG_AIRPORT } from "./geo";
 import {
@@ -8,12 +8,62 @@ import {
   buildRouteAirportTafTimelines,
   buildRouteAirportSummaries,
   buildRouteWeatherMatches,
-  parseDashboardOptions
+  parseDashboardOptions,
+  selectAirportsForWeather,
+  formatVisibility
 } from "./dashboard";
 import type { AirportWeather, NormalizedFlight, WeatherForecastPeriod } from "./types";
-import type { AirLabsAirportOperationalData } from "./airlabs";
+import {
+  createUnavailableFlightradar24Data,
+  FLIGHTRADAR24_OPERATIONAL_UNAVAILABLE_REASON,
+  type AirportOperationalData
+} from "./flightradar24";
 
 const now = new Date("2026-06-29T12:00:00+08:00");
+
+describe("visibility presentation", () => {
+  it.each([
+    [1.99, "VIS 1.99 sm / 3.2 km"],
+    [0, "VIS 0 sm / 0 km"],
+    [5 / 1.609344, "VIS 5 km"],
+    [4, "VIS 6.4 km"],
+    [10 / 1.609344, "VIS 10 km"],
+    [10, "VIS >10 km"],
+    ["6+", "VIS >9.7 km"],
+    ["P6SM", "VIS >9.7 km"],
+    ["7+", "VIS >10 km"],
+    ["M1/4SM", "VIS M1/4 sm / <0.4 km"],
+    ["<20", "VIS <20 sm / <32.2 km"],
+    ["1 1/2", "VIS 1 1/2 sm / 2.4 km"],
+    ["CAVOK", "VIS ≥10 km"],
+    [null, "VIS --"],
+    ["unknown", "VIS --"],
+    ["1/0", "VIS --"]
+  ] as Array<[string | number | null, string]>)("formats %s without losing source limits", (value, expected) => {
+    expect(formatVisibility(value)).toBe(expected);
+  });
+});
+
+describe("weather airport selection", () => {
+  it("includes every selected route airport and HKG without a priority-airport cap", () => {
+    const airports = Array.from({ length: 110 }, (_, index) => ({
+      ...HKG_AIRPORT,
+      iata: `A${index}`,
+      icao: `Z${String(index).padStart(3, "0")}`
+    }));
+    const flights = airports.map((airport, index) => ({
+      ...flight({ id: `all-airports-${index}` }),
+      routeAirportIata: airport.iata,
+      routeAirport: airport
+    }));
+    const selected = selectAirportsForWeather(flights, [HKG_AIRPORT, ...airports]);
+    expect(selected).toHaveLength(111);
+    expect(selected[0].iata).toBe("HKG");
+    expect(new Set(selected.map((airport) => airport.iata))).toEqual(
+      new Set(["HKG", ...airports.map((airport) => airport.iata)])
+    );
+  });
+});
 
 function flight(overrides: Partial<NormalizedFlight>): NormalizedFlight {
   const airport = getAirport(overrides.routeAirportIata ?? "TPE")!;
@@ -111,10 +161,10 @@ const weather: AirportWeather[] = [
   }
 ];
 
-function airLabsData(
+function mockOperationalData(
   airportIata: string,
-  overrides: Partial<AirLabsAirportOperationalData> = {}
-): AirLabsAirportOperationalData {
+  overrides: Partial<AirportOperationalData> = {}
+): AirportOperationalData {
   return {
     airportIata,
     schedules: [],
@@ -126,6 +176,82 @@ function airLabsData(
 function ts(value: string): number {
   return Math.floor(new Date(value).getTime() / 1000);
 }
+
+describe("visibility threshold semantics", () => {
+  const fiveKmSm = 5 / 1.609344;
+  const onePointFiveKmSm = 1.5 / 1.609344;
+  const cases = [
+    ["P2SM", "nil", "low"],
+    [">=2", "nil", "low"],
+    [`<${fiveKmSm}`, "caution", "medium"],
+    [`<=${fiveKmSm}`, "nil", "low"],
+    [`<${onePointFiveKmSm}`, "alert", "high"],
+    [`<=${onePointFiveKmSm}`, "caution", "medium"],
+    [String(onePointFiveKmSm), "caution", "medium"],
+    [String(fiveKmSm), "nil", "low"],
+    ["M1/4SM", "alert", "high"],
+    ["P1/4SM", "nil", "low"],
+    ["6+", "nil", "low"],
+    ["<20", "nil", "low"]
+  ];
+
+  function boundedWeather(visibility: string): AirportWeather[] {
+    return ["HKG", "TPE"].map((airportIata) => ({
+      ...weather[0],
+      airportIata,
+      airportIcao: getAirport(airportIata)!.icao,
+      metar: null,
+      tafPeriods: [tafPeriod({ visibility })]
+    }));
+  }
+
+  it.each(cases)("keeps the bound in %s when checking significant-weather thresholds", (visibility, tone) => {
+    const result = buildFlightSituationTable({ flights: [], weather: boundedWeather(visibility), now });
+    const row = result.rows.find((item) => item.id === "hkg-taf-hourly-breakdown")!;
+    expect(row.values[0]).toBe(tone === "nil" ? "NIL" : formatVisibility(visibility));
+  });
+
+  it.each(cases)("does not rank the bound in %s as an exact visibility value", (visibility, _tone, risk) => {
+    const originFlights = [flight({})];
+    const { hours } = buildHourlyArrivalTable({ flights: originFlights, weather: [], now, horizonHours: 6, direction: "arrival" });
+    const result = buildOperationalDashboardData({
+      originFlights,
+      weather: boundedWeather(visibility),
+      now,
+      hours,
+      operationalByIata: new Map([["TPE", mockOperationalData("TPE", { schedules: [{
+        flightIata: "BR1",
+        flightIcao: null,
+        depIata: "TPE",
+        arrIata: "HKG",
+        depTimeTs: ts("2026-06-29T04:30:00.000Z"),
+        arrTimeTs: null,
+        depDelayedMinutes: null,
+        arrDelayedMinutes: null,
+        delayedMinutes: null,
+        status: "scheduled"
+      }] })]])
+    });
+    const row = result.hourlyRouteAirportRanking[0];
+    expect(row.riskLevel).toBe(risk);
+    expect(row.visibilityLabel).toBe(formatVisibility(visibility));
+    if (/[<>PM+=]/.test(visibility)) {
+      expect(row.visibilityKm).toBeNull();
+    } else {
+      expect(row.visibilityKm).toBeCloseTo(Number(visibility) * 1.609344);
+    }
+  });
+
+  it("does not let an uncertain lower bound hide a confirmed low-visibility period", () => {
+    const mixedWeather = boundedWeather("P1/4SM").map((item) => ({
+      ...item,
+      tafPeriods: [...item.tafPeriods, tafPeriod({ visibility: `<${fiveKmSm}` })]
+    }));
+    const result = buildFlightSituationTable({ flights: [], weather: mixedWeather, now });
+    const row = result.rows.find((item) => item.id === "hkg-taf-hourly-breakdown")!;
+    expect(row.values[0]).toBe(formatVisibility(`<${fiveKmSm}`));
+  });
+});
 
 describe("dashboard aggregation", () => {
   it("builds a compact hourly table with flight count, METAR, and TAF rows", () => {
@@ -199,7 +325,7 @@ describe("dashboard aggregation", () => {
     ).toBe(12);
   });
 
-  it("summarizes all current-window route airports and separates unqueried weather", () => {
+  it("summarizes all current-window route airports and marks absent reports as NO DATA", () => {
     const nrt = getAirport("NRT")!;
     const summaries = buildRouteAirportSummaries({
       flights: [
@@ -222,7 +348,7 @@ describe("dashboard aggregation", () => {
     expect(summaries.map((summary) => summary.airportIata)).toEqual(["NRT", "TPE"]);
     expect(summaries.find((summary) => summary.airportIata === "TPE")?.weatherStatus).toBe("taf");
     expect(summaries.find((summary) => summary.airportIata === "NRT")?.weatherStatus).toBe(
-      "not-queried"
+      "no-data"
     );
   });
 
@@ -266,7 +392,61 @@ describe("dashboard aggregation", () => {
     ).toHaveLength(0);
   });
 
-  it("builds AirLabs-backed origin operational insights, totals, and hourly ranking", () => {
+  it("keeps FR24 operations unavailable without making unsupported provider requests", () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    try {
+      const flights = [
+        flight({ id: "tpe-arrival", routeAirportIata: "TPE" }),
+        flight({ id: "hnd-arrival", routeAirportIata: "HND" })
+      ];
+      const operationalByIata = createUnavailableFlightradar24Data([
+        getAirport("TPE")!,
+        getAirport("HND")!
+      ]);
+      const hours = buildHourlyArrivalTable({
+        flights,
+        weather,
+        now,
+        horizonHours: 6,
+        direction: "arrival"
+      }).hours;
+      const result = buildOperationalDashboardData({
+        originFlights: flights,
+        weather,
+        operationalByIata,
+        now,
+        hours
+      });
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(operationalByIata.size).toBe(2);
+      expect(result.operationalTotals).toMatchObject({
+        provider: "Flightradar24",
+        status: "unavailable",
+        totalAirports: 2,
+        availableAirports: 0,
+        unavailableAirports: 2,
+        delayRate: null,
+        cancellationRate: null,
+        past6Status: "unavailable",
+        trend: "unavailable",
+        unavailableReason: FLIGHTRADAR24_OPERATIONAL_UNAVAILABLE_REASON
+      });
+      for (const insight of result.arrivalOriginOperationalInsights) {
+        expect(insight.current.status).toBe("unavailable");
+        expect(insight.past6.status).toBe("unavailable");
+        expect(insight.current.delayRate).toBeNull();
+        expect(insight.current.cancellationRate).toBeNull();
+      }
+      expect(result.hourlyRouteAirportRanking).toHaveLength(2);
+      expect(result.hourlyRouteAirportRanking.every((item) => item.riskLevel === "unavailable"))
+        .toBe(true);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("aggregates mock normalized operational records (not a connected FR24 feed)", () => {
     const hnd = getAirport("HND")!;
     const flights = [
       flight({
@@ -289,10 +469,10 @@ describe("dashboard aggregation", () => {
       horizonHours: 6,
       direction: "arrival"
     }).hours;
-    const airLabsByIata = new Map([
+    const operationalByIata = new Map([
       [
         "TPE",
-        airLabsData("TPE", {
+        mockOperationalData("TPE", {
           schedules: [
             {
               flightIata: "BR1",
@@ -373,8 +553,8 @@ describe("dashboard aggregation", () => {
       ],
       [
         "HND",
-        airLabsData("HND", {
-          unavailableReason: "Mock AirLabs outage"
+        mockOperationalData("HND", {
+          unavailableReason: "Mock normalized operational records unavailable"
         })
       ]
     ]);
@@ -382,7 +562,7 @@ describe("dashboard aggregation", () => {
     const result = buildOperationalDashboardData({
       originFlights: flights,
       weather,
-      airLabsByIata,
+      operationalByIata,
       now,
       hours
     });
@@ -521,25 +701,28 @@ describe("dashboard aggregation", () => {
       direction: "both"
     });
 
-    expect(timelines.map((timeline) => timeline.airportIata)).toEqual(["TPE"]);
-    expect(timelines[0].cells).toHaveLength(6);
-    expect(timelines[0].cells[0]).toMatchObject({
+    expect(timelines.map((timeline) => timeline.airportIata)).toEqual(["NRT", "TPE"]);
+    expect(timelines[0].cells.every((cell) => cell.summary === "NO DATA")).toBe(true);
+    const tpeTimeline = timelines.find((timeline) => timeline.airportIata === "TPE")!;
+    expect(tpeTimeline.cells).toHaveLength(6);
+    expect(tpeTimeline.cells[0]).toMatchObject({
       tone: "normal",
       summary: expect.stringContaining("BECMG")
     });
-    expect(timelines[0].cells[0].summary).toContain("NSW");
-    expect(timelines[0].cells[0].summary).toContain("340/8kt");
-    expect(timelines[0].cells[0].summary).toContain("FEW020/BKN035");
-    expect(timelines[0].cells[1]).toMatchObject({
+    expect(tpeTimeline.cells[0].summary).toContain("NSW");
+    expect(tpeTimeline.cells[0].summary).toContain("340/8kt");
+    expect(tpeTimeline.cells[0].summary).toContain("VIS >9.7 km");
+    expect(tpeTimeline.cells[0].summary).toContain("FEW020/BKN035");
+    expect(tpeTimeline.cells[1]).toMatchObject({
       tone: "concern",
       weatherCodes: ["+SHRA"]
     });
-    expect(timelines[0].cells[1].summary).toContain("TEMPO PROB30");
-    expect(timelines[0].cells[1].summary).toContain("090/18G35kt");
-    expect(timelines[0].cells[1].summary).toContain("VIS 1.99 sm / 3.2 km");
-    expect(timelines[0].cells[1].summary).toContain("BKN008");
-    expect(timelines[0].cells[2].summary).toContain("PROB40");
-    expect(timelines[0].cells[2].summary).toContain("VRB/4kt");
+    expect(tpeTimeline.cells[1].summary).toContain("TEMPO PROB30");
+    expect(tpeTimeline.cells[1].summary).toContain("090/18G35kt");
+    expect(tpeTimeline.cells[1].summary).toContain("VIS 1.99 sm / 3.2 km");
+    expect(tpeTimeline.cells[1].summary).toContain("BKN008");
+    expect(tpeTimeline.cells[2].summary).toContain("PROB40");
+    expect(tpeTimeline.cells[2].summary).toContain("VRB/4kt");
   });
 
   it("builds the fixed +15 arrival situation table with in-air, on-land, and within-100km rows", () => {

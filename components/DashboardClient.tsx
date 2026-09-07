@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, startTransition, useEffect, useRef, useState } from "react";
+import { Fragment, startTransition, useEffect, useRef, useState, type ReactNode } from "react";
 import type {
   DashboardError,
   DashboardData,
@@ -8,8 +8,6 @@ import type {
   Region,
   RouteAirportSummary,
   RouteAirportWeatherStatus,
-  RouteWeatherMatch,
-  RouteWeatherSource,
   TableRow,
   TrafficType
 } from "@/lib/types";
@@ -29,12 +27,28 @@ const REGION_ORDER: Array<Region | "Other"> = [
   "Other"
 ];
 const TAF_DECODE_URL = "https://www.hko.gov.hk/en/aviat/taf_decode.htm";
+const FR24_DISRUPTION_URL = "https://www.flightradar24.com/data/airport-disruption";
 const RISK_ORDER: Record<OperationalRiskLevel, number> = {
   high: 0,
   medium: 1,
   low: 2,
   unavailable: 3
 };
+
+function CollapsiblePanel({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <details className="dashboard-disclosure">
+      <summary>
+        <span className="disclosure-arrow" aria-hidden="true">▶</span>
+        <span className="disclosure-title">
+          <h2>{title}</h2>
+          <small>Click the triangle or title to expand or collapse.</small>
+        </span>
+      </summary>
+      <div className="disclosure-body">{children}</div>
+    </details>
+  );
+}
 
 function formatDateTime(value?: string | null): string {
   if (!value) {
@@ -110,14 +124,19 @@ function weatherStatusLabel(status: RouteAirportWeatherStatus, codes: string[]):
   if (status === "none") {
     return "NO REPORTED WX";
   }
-  if (status === "not-queried") {
-    return "Not queried";
-  }
   return "NO DATA";
 }
 
 function windowLabel(horizon: HorizonFilter): string {
   return horizon === 30 ? "next 30h extended window" : `next ${horizon}h`;
+}
+
+function routeAirportScope(direction: DirectionFilter): string {
+  return direction === "arrival"
+    ? "arrival origins"
+    : direction === "departure"
+      ? "departure destinations"
+      : "arrival origins + departure destinations";
 }
 
 function directionWindowFlightLabel(direction: DirectionFilter, horizon: HorizonFilter): string {
@@ -184,21 +203,6 @@ function directionCountText(item: {
     parts.push(`${item.departureCount} outbound`);
   }
   return parts.join(" / ") || `${item.count ?? item.flightCount ?? 0} flights`;
-}
-
-function sourceTime(source: RouteWeatherSource): string {
-  if (source.kind === "METAR") {
-    return `observed ${formatUtcClock(source.observedAt)}`;
-  }
-  return `${formatUtcClock(source.startsAt)}-${formatUtcClock(source.endsAt)}`;
-}
-
-function sourceLabel(source: RouteWeatherSource): string {
-  const codes = source.weatherCodes.length > 0 ? source.weatherCodes.join("/") : "reported wx";
-  const notes = [source.changeIndicator, source.probability ? `PROB${source.probability}` : null]
-    .filter(Boolean)
-    .join(" · ");
-  return `${source.kind} ${codes} · ${sourceTime(source)}${notes ? ` · ${notes}` : ""}`;
 }
 
 function formatPercent(value: number | null | undefined): string {
@@ -444,7 +448,7 @@ function DashboardFilters({
         <label htmlFor="direction">
           Direction
           <small>
-            Changes the chart, summary, Top 10, route-airport TAF, and weather matches. Operational
+            Changes the chart, summary, Top 10 and route-airport TAF. Operational
             insights, ranking, and the 16-hour situation table stay inbound.
           </small>
         </label>
@@ -463,8 +467,8 @@ function DashboardFilters({
         <label htmlFor="traffic">
           Flight type
           <small>
-            Filters HKIA schedule counts and which arrival origins are checked. AirLabs
-            airport-wide samples are not split by passenger/cargo type.
+            Filters HKIA schedule counts and which arrival origins are checked. External
+            airport-wide operational statistics are separate from these passenger/cargo counts.
           </small>
         </label>
         <select
@@ -531,7 +535,10 @@ function SummaryStrip({
       <div className="summary-card">
         <div className="value">{data.routeAirportSummaries.length.toLocaleString()}</div>
         <div className="label">Route airports in {windowLabel(horizon)}</div>
-        <small>Distinct origins for inbound flights and destinations for outbound flights.</small>
+        <small>
+          Number of distinct origin airports for inbound flights and destination airports for
+          outbound flights scheduled in this window. Each airport is counted once.
+        </small>
       </div>
       <div className="summary-card">
         <div className="value">{data.routeWeatherMatches.length.toLocaleString()}</div>
@@ -541,13 +548,13 @@ function SummaryStrip({
       <div className="summary-card">
         <div className="value">{formatCount(ops.totalAirports)}</div>
         <div className="label">Arrival origin airports in the selected window</div>
-        <small>Distinct origins in the HKIA arrival schedule; not an AirLabs coverage count.</small>
+        <small>Distinct origins in the HKIA arrival schedule; not a provider coverage count.</small>
       </div>
       <div className="summary-card">
         <div className="value">{operationalCount(ops.status, ops.affectedFlights)}</div>
         <div className="label">Total affected origin-airport departures</div>
         <small>
-          AirLabs departures delayed at least 30 minutes or cancelled; N/A means no usable data.
+          Flightradar24 operational data is not connected; N/A means unavailable, not zero.
         </small>
       </div>
       <div className="summary-card">
@@ -556,7 +563,7 @@ function SummaryStrip({
           {operationalCount(ops.status, ops.cancelledFlights)}
         </div>
         <div className="label">Total delayed / cancelled flights</div>
-        <small>Airport-wide AirLabs departure sample, not only flights bound for Hong Kong.</small>
+        <small>Awaiting an authorised Flightradar24 airport delay/cancellation data feed.</small>
       </div>
     </section>
   );
@@ -579,7 +586,7 @@ function OperationalPast6Cards({ data }: { data: DashboardData }) {
           </strong>
           <small>
             {pastUnavailable
-              ? "No usable AirLabs historical sample"
+              ? "Flightradar24 six-hour history is not connected"
               : `${formatCount(totals.past6DelayedFlights)} delayed · ${formatCount(
                   totals.past6CancelledFlights
                 )} cancelled`}
@@ -592,7 +599,7 @@ function OperationalPast6Cards({ data }: { data: DashboardData }) {
           </strong>
           <small>
             {currentUnavailable
-              ? "No usable AirLabs operational sample"
+              ? "Flightradar24 operational statistics are not connected"
               : `${formatPercent(totals.delayRate)} delay · ${formatPercent(
                   totals.cancellationRate
                 )} cancel`}
@@ -606,7 +613,7 @@ function OperationalPast6Cards({ data }: { data: DashboardData }) {
               ? `${formatCount(totals.availableAirports)} of ${formatCount(
                   totals.totalAirports
                 )} airports have usable data`
-              : totals.unavailableReason ?? "Operational data unavailable"}
+              : "Trend needs both current and past-six-hour data; neither feed is connected."}
           </small>
         </article>
       </div>
@@ -614,7 +621,8 @@ function OperationalPast6Cards({ data }: { data: DashboardData }) {
         Trend compares the affected-flight percentage in the past six hours with the current
         selected window. Getting worse or Recovering requires a change of at least 5 percentage
         points; Persistent means both periods are affected without that change.
-        Past 6 Hours summarizes returned samples; complete six-hour coverage is not verified.
+        Flightradar24 historical data is not connected. Its public daily figures must not be
+        interpreted as a six-hour sample.
       </p>
     </div>
   );
@@ -637,15 +645,14 @@ function ArrivalOriginOperationalInsights({
           <p className="eyebrow">Origin-airport operational insight</p>
           <h2>Arrival Origin Operational Insights</h2>
           <p className="section-description">
-            For each origin in the HKIA arrival schedule, this section checks AirLabs airport-wide
-            departures in the {windowLabel(horizon)}. Delay means at least 30 minutes. Affected is
-            the distinct union of delayed and cancelled departures. These statistics are not
-            limited to flights bound for Hong Kong. Totals use only origins with usable AirLabs
-            data. Scroll inside the table to review more origins.
+            Origins are selected from HKIA arrivals in the {windowLabel(horizon)}.
+            Flightradar24 is the requested operational source, but its airport delay/cancellation
+            feed is not connected. The public tracking API does not provide the schedules and
+            cancellation records needed here. N/A does not mean no delay.
           </p>
         </div>
         <div className="heading-note">
-          <span className="table-note">Provider: AirLabs</span>
+          <span className="table-note">Requested source: Flightradar24</span>
           <small>
             {ops.status === "unavailable"
               ? "Operational sample unavailable"
@@ -659,6 +666,13 @@ function ArrivalOriginOperationalInsights({
           </small>
         </div>
       </div>
+      <p className="module-help provider-source-help">
+        <a href={FR24_DISRUPTION_URL} target="_blank" rel="noreferrer">
+          Check Flightradar24 airport disruptions
+        </a>{" "}
+        opens the source website in a new tab. Its published daily statistics are not imported
+        into this dashboard or treated as hourly / Past 6 Hours data.
+      </p>
       <div className="ops-total-strip">
         <div>
           <span>Arrival origin airports</span>
@@ -668,17 +682,17 @@ function ArrivalOriginOperationalInsights({
         <div>
           <span>Total flights sampled</span>
           <strong>{operationalCount(ops.status, ops.totalFlights)}</strong>
-          <small>Airport-wide AirLabs departures used as the rate denominator.</small>
+          <small>No authorised Flightradar24 schedule denominator is connected yet.</small>
         </div>
         <div>
           <span>Total delayed</span>
           <strong>{operationalCount(ops.status, ops.delayedFlights)}</strong>
-          <small>Distinct sampled departures delayed at least 30 minutes.</small>
+          <small>Unavailable until the source supplies delay counts and their definition.</small>
         </div>
         <div>
           <span>Total cancelled</span>
           <strong>{operationalCount(ops.status, ops.cancelledFlights)}</strong>
-          <small>Distinct sampled departures whose provider status says cancelled.</small>
+          <small>Unavailable until the source supplies cancellation records.</small>
         </div>
         <div>
           <span>Affected arrival origins</span>
@@ -700,8 +714,8 @@ function ArrivalOriginOperationalInsights({
               <tr>
                 <th>Airport<small>Arrival origin</small></th>
                 <th>HKIA arrivals<small>Scheduled to Hong Kong</small></th>
-                <th>Delay rate<small>Delayed ÷ AirLabs sample</small></th>
-                <th>Cancel rate<small>Cancelled ÷ AirLabs sample</small></th>
+                <th>Delay rate<small>Flightradar24 feed required</small></th>
+                <th>Cancel rate<small>Flightradar24 feed required</small></th>
                 <th>Affected<small>Distinct delayed or cancelled</small></th>
                 <th>Past 6h<small>Previous six hours</small></th>
                 <th>Trend<small>Change in affected-flight rate</small></th>
@@ -737,7 +751,9 @@ function ArrivalOriginOperationalInsights({
                     <small>
                       {formatClock(item.current.windowStart)}-{formatClock(item.current.windowEnd)} HKT
                     </small>
-                    {item.current.unavailableReason ? <small>{item.current.unavailableReason}</small> : null}
+                    {item.current.unavailableReason ? (
+                      <small title={item.current.unavailableReason}>Flightradar24 feed not connected.</small>
+                    ) : null}
                   </td>
                 </tr>
               ))}
@@ -817,10 +833,9 @@ function HourlyRouteAirportRanking({
           <h2>Hourly Route Airport Ranking</h2>
           <p className="section-description">
             Each row represents an origin with an HKIA arrival scheduled in that hour. Ranking
-            combines that Hong Kong route count with airport-wide AirLabs departure statistics and
-            AviationWeather conditions. The AirLabs sample covers all origin-airport departures in
-            the same clock-hour window; it is not the operational record of the Hong Kong-bound
-            arrivals in that row.
+            shows that Hong Kong route count and AviationWeather conditions. Flightradar24
+            operational data is not connected, so delay, cancellation and risk remain unavailable.
+            A public daily airport statistic cannot be substituted for this hourly view.
           </p>
         </div>
         <div className="heading-note">
@@ -886,14 +901,16 @@ function HourlyRouteAirportRanking({
           means none of those thresholds were met.
         </p>
         <p>
-          <strong>Unavailable:</strong> AirLabs operational data is missing, so no risk level is
+          <strong>Unavailable:</strong> Flightradar24 operational data is not connected, so no risk level is
           assigned even if weather is present. Current provider state: {opsAvailable ? "available" : "unavailable"}.
         </p>
         <p>
           <strong>Weather and units:</strong> The first hour prefers the latest METAR observation
           and falls back to overlapping TAF when METAR is unavailable; future hours use overlapping
-          TAF forecasts. VIS is visibility; sm is statute miles and km is kilometres. VIS -- means
-          no numeric visibility is displayable, not zero. “No weather code” does not by itself
+          TAF forecasts. VIS means visibility: below 5 km, show the source miles (sm) and detailed
+          kilometres; from 5 to 10 km, show kilometres only; above 10 km, show &gt;10 km.
+          “&gt;” means greater than; “≥” means at least; “&lt;” means less than.
+          Source bounds are preserved. VIS -- means missing, not zero. “No weather code” does not by itself
           confirm good weather.
         </p>
         <p>Scroll inside the table to review more matching ranking rows.</p>
@@ -914,10 +931,10 @@ function HourlyRouteAirportRanking({
                 <th>Route<small>Origin → Hong Kong</small></th>
                 <th>Airport<small>Origin airport</small></th>
                 <th>Flights<small>HKIA arrival records</small></th>
-                <th>Delay<small>AirLabs airport-wide rate</small></th>
-                <th>Cancel<small>AirLabs airport-wide rate</small></th>
-                <th>Affected<small>Distinct AirLabs departures</small></th>
-                <th>VIS<small>sm / km</small></th>
+                <th>Delay<small>Flightradar24 feed required</small></th>
+                <th>Cancel<small>Flightradar24 feed required</small></th>
+                <th>Affected<small>Operational data required</small></th>
+                <th>VIS<small>Detail below 5 km</small></th>
                 <th>Weather<small>Source weather codes</small></th>
                 <th>Risk<small>Dashboard rule, not official</small></th>
               </tr>
@@ -1027,12 +1044,7 @@ function TopAirportsPanel({
     },
     {}
   );
-  const scope =
-    direction === "arrival"
-      ? "arrival origins"
-      : direction === "departure"
-        ? "departure destinations"
-        : "arrival origins + departure destinations";
+  const scope = routeAirportScope(direction);
 
   return (
     <section className="top30-list">
@@ -1048,7 +1060,8 @@ function TopAirportsPanel({
         <p><strong>TAF</strong> is an aerodrome forecast.</p>
         <p><strong>NO REPORTED WX</strong> means a usable report has no encoded weather group.</p>
         <p><strong>NO DATA</strong> means no usable report was returned.</p>
-        <p><strong>Not queried</strong> means the airport is outside the current weather-query coverage.</p>
+        <p>Every route airport with a known aviation location code is queried for METAR and TAF;
+          no airport is skipped because of flight rank or loading limits.</p>
       </div>
       {REGION_ORDER.map((region) => {
         const items = (grouped[region] ?? []).sort((a, b) => b.count - a.count).slice(0, 10);
@@ -1117,7 +1130,9 @@ function RouteAirportTafPanel({
           <strong>Units and codes:</strong> kt is knots, G is gust, VIS is visibility, sm is statute
           miles, km is kilometres, and ft is feet. BKN means broken cloud, OVC overcast, and VV
           obscured vertical visibility. VIS -- means no numeric visibility is displayable, not
-          zero.
+          zero. Below 5 km the source miles and converted kilometres are shown in detail;
+          5–10 km shows kilometres only, and above 10 km shows &gt;10 km. Source lower bounds
+          remain lower bounds: “&gt;” means greater than, “≥” at least, and “&lt;” less than.
         </p>
         <p>
           <strong>Colours:</strong> green means no structured weather code and gust below 30 kt;
@@ -1127,7 +1142,7 @@ function RouteAirportTafPanel({
         <p>Scroll inside the table vertically for more airports and horizontally for later hours.</p>
       </div>
       {timelines.length === 0 ? (
-        <p className="empty taf-empty">No TAF-queried route airports in this window.</p>
+        <p className="empty taf-empty">No route airports in this window.</p>
       ) : (
         <div
           className="taf-scroll"
@@ -1202,84 +1217,6 @@ function RouteAirportTafPanel({
   );
 }
 
-function RouteAirportWeatherMatches({
-  data,
-  horizon
-}: {
-  data: DashboardData;
-  horizon: HorizonFilter;
-}) {
-  return (
-    <section className="panel concerns-panel">
-      <div className="section-heading">
-        <div>
-          <p className="eyebrow">Route airport weather match</p>
-          <h2>Route Airport Weather Matches</h2>
-          <p className="section-description">
-            Current-window route airports whose latest METAR observation or overlapping TAF
-            forecast period contains an encoded weather group. All source-reported codes are
-            eligible; this is not limited to severe weather and is not an operational-impact rating.
-          </p>
-        </div>
-      </div>
-      <div className="module-legend weather-match-legend">
-        <p>
-          <strong>Match criteria:</strong> inbound uses the origin airport; outbound uses the
-          destination airport. METAR means observed weather and TAF means forecast weather.
-        </p>
-        <p>
-          <strong>Code notation:</strong> “-” means light, “+” heavy, VC vicinity, TS thunderstorm,
-          SH showers, RA rain, DZ drizzle, BR mist, FG fog, and HZ haze. Each card shows up to two
-          decoded source notes in plain language below the source line.
-        </p>
-        <p>
-          Up to four matching source periods are shown per airport; “+N more TAF periods” means
-          additional matching periods exist but are not expanded in this view. Scroll inside the
-          card list to review more airports.
-        </p>
-      </div>
-      {data.routeWeatherMatches.length === 0 ? (
-        <p className="empty">No METAR/TAF weather-code matches in the {windowLabel(horizon)}.</p>
-      ) : (
-        <div
-          className="concern-list"
-          role="region"
-          aria-label="Route airport weather match cards; scroll for more airports"
-          tabIndex={0}
-        >
-          {data.routeWeatherMatches.map((match: RouteWeatherMatch) => {
-            const visibleSources = match.sources.slice(0, 4);
-            const hiddenCount = match.sources.length - visibleSources.length;
-            return (
-              <div className="concern-item" key={match.airportIata}>
-                <div>
-                  <strong>{airportDisplayName(match)}</strong>
-                  <span>
-                    {airportMeta(match)} · {match.flightCount} flights · {directionCountText(match)}
-                  </span>
-                </div>
-                <div className="weather-pill weather-reported">
-                  {[...new Set(match.sources.map((source) => source.kind))].join(" + ")}
-                </div>
-                <div className="match-source-list">
-                  {visibleSources.map((source, index) => (
-                    <p className="match-source" key={`${match.airportIata}-${source.kind}-${index}`}>
-                      <strong>{sourceLabel(source)}</strong>
-                      <span>{source.reasons.slice(0, 2).join(", ")}</span>
-                    </p>
-                  ))}
-                  {hiddenCount > 0 ? (
-                    <p className="match-source">+{hiddenCount} more TAF periods</p>
-                  ) : null}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </section>
-  );
-}
 
 export default function DashboardClient() {
   const [data, setData] = useState<DashboardData | null>(null);
@@ -1424,7 +1361,7 @@ export default function DashboardClient() {
         <div className="notice warning-notice" role="status">
           <strong>Data quality notices</strong>
           <small>
-            These notices identify missing or intentionally limited source coverage; they are not
+            These notices identify missing source reports or failed requests; they are not
             operational alerts.
           </small>
           {data.warnings.map((warning) => (
@@ -1444,22 +1381,33 @@ export default function DashboardClient() {
             onTrafficChange={setTraffic}
             onHorizonChange={setHorizon}
           />
-          <ArrivalRateChart data={data} direction={displayFilters.direction} />
+          <CollapsiblePanel title={`${directionChartTitle(displayFilters.direction)} · HKT / UTC (Z)`}>
+            <ArrivalRateChart data={data} direction={displayFilters.direction} />
+          </CollapsiblePanel>
           <SummaryStrip
             data={data}
             direction={displayFilters.direction}
             horizon={displayFilters.horizon}
           />
-          <ArrivalOriginOperationalInsights data={data} horizon={displayFilters.horizon} />
-          <HourlyRouteAirportRanking data={data} horizon={displayFilters.horizon} />
-          <TopAirportsPanel
-            data={data}
-            direction={displayFilters.direction}
-            horizon={displayFilters.horizon}
-          />
-          <RouteAirportTafPanel data={data} horizon={displayFilters.horizon} />
-          <FlightSituationTable data={data} />
-          <RouteAirportWeatherMatches data={data} horizon={displayFilters.horizon} />
+          <CollapsiblePanel title="Arrival Origin Operational Insights">
+            <ArrivalOriginOperationalInsights data={data} horizon={displayFilters.horizon} />
+          </CollapsiblePanel>
+          <CollapsiblePanel title="Hourly Route Airport Ranking">
+            <HourlyRouteAirportRanking data={data} horizon={displayFilters.horizon} />
+          </CollapsiblePanel>
+          <CollapsiblePanel title={`Top 10 ${routeAirportScope(displayFilters.direction)} by region · ${windowLabel(displayFilters.horizon)}`}>
+            <TopAirportsPanel
+              data={data}
+              direction={displayFilters.direction}
+              horizon={displayFilters.horizon}
+            />
+          </CollapsiblePanel>
+          <CollapsiblePanel title="Hourly Route Airport TAF">
+            <RouteAirportTafPanel data={data} horizon={displayFilters.horizon} />
+          </CollapsiblePanel>
+          <CollapsiblePanel title="Flight Situational Awareness real-time Dashboard">
+            <FlightSituationTable data={data} />
+          </CollapsiblePanel>
         </>
       ) : null}
     </main>

@@ -1,5 +1,92 @@
-import { describe, expect, it } from "vitest";
-import { normalizeAirportWeather, tafWeatherAt } from "./weather";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { fetchWeatherForAirports, normalizeAirportWeather, tafWeatherAt } from "./weather";
+import type { AirportMetadata } from "./types";
+
+afterEach(() => vi.unstubAllGlobals());
+
+function testAirports(count: number): AirportMetadata[] {
+  return Array.from({ length: count }, (_, index) => ({
+    iata: `A${index}`,
+    icao: `Z${String(index).padStart(3, "0")}`,
+    name: `Test airport ${index}`,
+    city: "Test city",
+    country: "Test country",
+    region: "Asia",
+    lat: 0,
+    lon: 0
+  }));
+}
+
+describe("complete batched weather coverage", () => {
+  it("queries METAR and TAF for every airport beyond the former 45/72/90 caps", async () => {
+    const airports = testAirports(101);
+    const requested: Record<string, string[]> = { metar: [], taf: [] };
+    const fetchMock = vi.fn(async (input: URL) => {
+      const endpoint = input.pathname.split("/").at(-1)!;
+      const ids = input.searchParams.get("ids")!.split(",");
+      expect(ids.length).toBeLessThanOrEqual(45);
+      requested[endpoint].push(...ids);
+      return Response.json(ids.map((icaoId) => ({
+        icaoId,
+        ...(endpoint === "metar" ? { rawOb: `${icaoId} CAVOK` } : {
+          rawTAF: `TAF ${icaoId}`,
+          fcsts: [{ timeFrom: 1782705600, timeTo: 1782763200, wxString: "NSW" }]
+        })
+      })));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const warnings: string[] = [];
+    const result = await fetchWeatherForAirports(airports, warnings);
+    expect(requested.metar.sort()).toEqual(airports.map((airport) => airport.icao).sort());
+    expect(requested.taf.sort()).toEqual(airports.map((airport) => airport.icao).sort());
+    expect(result).toHaveLength(101);
+    expect(result.every((airport) => airport.tafQueried && airport.rawTaf && airport.rawMetar)).toBe(true);
+    expect(warnings).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+  });
+
+  it("retries a failed batch and preserves other METAR/TAF batches after a permanent failure", async () => {
+    const airports = testAirports(91);
+    const attempts = new Map<string, number>();
+    vi.stubGlobal("fetch", vi.fn(async (input: URL) => {
+      const endpoint = input.pathname.split("/").at(-1)!;
+      const ids = input.searchParams.get("ids")!.split(",");
+      const key = `${endpoint}:${ids[0]}`;
+      const attempt = (attempts.get(key) ?? 0) + 1;
+      attempts.set(key, attempt);
+      if ((endpoint === "metar" && ids[0] === "Z045") ||
+          (endpoint === "taf" && ids[0] === "Z090" && attempt === 1)) {
+        return new Response("temporarily unavailable", { status: 503 });
+      }
+      return Response.json(ids.map((icaoId) => ({
+        icaoId,
+        ...(endpoint === "metar" ? { rawOb: `${icaoId} CAVOK` } : { rawTAF: `TAF ${icaoId}` })
+      })));
+    }));
+    const warnings: string[] = [];
+    const result = await fetchWeatherForAirports(airports, warnings);
+    expect(attempts.get("metar:Z045")).toBe(2);
+    expect(attempts.get("taf:Z090")).toBe(2);
+    expect(result[0].rawMetar).not.toBeNull();
+    expect(result[45].rawMetar).toBeNull();
+    expect(result[45].rawTaf).not.toBeNull();
+    expect(result[90].rawMetar).not.toBeNull();
+    expect(result[90].rawTaf).not.toBeNull();
+    expect(result.every((airport) => airport.tafQueried)).toBe(true);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("METAR unavailable after 2 attempts");
+  });
+
+  it("treats a successful empty response as queried NO DATA, not a failed or omitted query", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const warnings: string[] = [];
+    const result = await fetchWeatherForAirports(testAirports(1), warnings);
+    expect(result[0]).toMatchObject({ tafQueried: true, category: "unknown", label: "NO DATA" });
+    expect(warnings).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe("source-backed METAR/TAF weather categories", () => {
   it("reports the exact structured thunderstorm code without assigning severity", () => {

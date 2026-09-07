@@ -1,8 +1,8 @@
 import {
-  fetchAirLabsAirportOperationalData,
-  type AirLabsAirportOperationalData,
-  type AirLabsOperationalFlight
-} from "./airlabs";
+  createUnavailableFlightradar24Data,
+  type AirportOperationalData,
+  type OperationalFlight
+} from "./flightradar24";
 import { fetchAirportFallbacks } from "./airportFallback";
 import { estimateFlightPhase, FLIGHT_LOOKBACK_HOURS } from "./flightPhase";
 import { distanceKm, greatCircleRoute, HKG_AIRPORT } from "./geo";
@@ -132,10 +132,9 @@ function enrichFlightsWithFallbacks(
   });
 }
 
-function prioritizeAirportsForWeather(
+export function selectAirportsForWeather(
   flights: NormalizedFlight[],
-  airports: AirportMetadata[],
-  limit = 72
+  airports: AirportMetadata[]
 ): AirportMetadata[] {
   const counts = new Map<string, number>([["HKG", Number.MAX_SAFE_INTEGER]]);
   for (const flight of flights) {
@@ -151,7 +150,6 @@ function prioritizeAirportsForWeather(
       Boolean(entry.airport)
     )
     .sort((a, b) => b.count - a.count || a.airport.iata.localeCompare(b.airport.iata))
-    .slice(0, limit)
     .map((entry) => entry.airport);
 }
 
@@ -354,70 +352,59 @@ type VisibilityDisplay = {
   source: string;
   statuteMiles: number;
   km: number;
-  plus: boolean;
+  qualifier: ">" | "<" | "≥" | "≤" | "";
 };
 
 function parseVisibilityDisplay(value: string | number | null): VisibilityDisplay | null {
-  if (!value) {
+  if (value === null || value === "") {
     return null;
   }
 
-  const normalized = String(value).trim().toUpperCase();
-  if (!normalized || normalized === "CAVOK") {
+  const normalized = String(value).trim().toUpperCase().replace(/\s*SM$/, "");
+  if (!normalized) {
     return null;
   }
-
-  const mixedFraction = normalized.match(/^(\d+)\s+(\d+)\/(\d+)/);
-  if (mixedFraction) {
-    const whole = Number(mixedFraction[1]);
-    const numerator = Number(mixedFraction[2]);
-    const denominator = Number(mixedFraction[3]);
-    if (denominator !== 0) {
-      const statuteMiles = whole + numerator / denominator;
-      return {
-        source: normalized,
-        statuteMiles,
-        km: statuteMiles * 1.609344,
-        plus: normalized.includes("+")
-      };
-    }
+  if (normalized === "CAVOK") {
+    return { source: normalized, statuteMiles: 10 / 1.609344, km: 10, qualifier: "≥" };
   }
 
-  const fraction = normalized.match(/^(\d+)\/(\d+)/);
-  if (fraction) {
-    const numerator = Number(fraction[1]);
-    const denominator = Number(fraction[2]);
-    if (denominator !== 0) {
-      const statuteMiles = numerator / denominator;
-      return {
-        source: normalized,
-        statuteMiles,
-        km: statuteMiles * 1.609344,
-        plus: normalized.includes("+")
-      };
-    }
-  }
-
-  const numericMatch = normalized.match(/\d+(?:\.\d+)?/);
-  if (!numericMatch) {
+  const match = normalized.match(/^(>=|<=|>|<|≥|≤|P|M)?\s*(\d+(?:\.\d+)?(?:\s+\d+\/\d+|\/\d+)?)(\+)?$/);
+  if (!match) {
     return null;
   }
-
-  const numeric = Number(numericMatch[0]);
-  if (!Number.isFinite(numeric)) {
+  const prefix = match[1];
+  const qualifier: VisibilityDisplay["qualifier"] =
+    prefix === ">=" || prefix === "≥" ? "≥" :
+    prefix === "<=" || prefix === "≤" ? "≤" :
+    prefix === "<" || prefix === "M" ? "<" :
+    prefix === ">" || prefix === "P" || match[3] ? ">" : "";
+  const parts = match[2].split(/\s+/);
+  const fractionalPart = parts[parts.length - 1];
+  const [numerator, denominator] = fractionalPart.split("/").map(Number);
+  if (denominator === 0) {
     return null;
   }
-
+  const statuteMiles = (parts.length === 2 ? Number(parts[0]) : 0) +
+    (denominator === undefined ? numerator : numerator / denominator);
+  if (!Number.isFinite(statuteMiles)) {
+    return null;
+  }
   return {
     source: normalized,
-    statuteMiles: numeric,
-    km: numeric * 1.609344,
-    plus: normalized.includes("+")
+    statuteMiles,
+    km: statuteMiles * 1.609344,
+    qualifier
   };
 }
 
-function parseVisibilityKm(value: string | number | null): number | null {
-  return parseVisibilityDisplay(value)?.km ?? null;
+function visibilityIsBelow(visibility: VisibilityDisplay | null, thresholdKm: number): boolean {
+  if (!visibility || visibility.qualifier === ">" || visibility.qualifier === "≥") {
+    // A lower bound cannot establish that the actual value is below a threshold.
+    return false;
+  }
+  return visibility.qualifier === "<"
+    ? visibility.km <= thresholdKm
+    : visibility.km < thresholdKm;
 }
 
 function formatKm(km: number): string {
@@ -425,13 +412,22 @@ function formatKm(km: number): string {
   return `${Number.isInteger(rounded) ? rounded.toFixed(0) : rounded.toFixed(1)} km`;
 }
 
-function formatVisibility(value: string | number | null): string {
+export function formatVisibility(value: string | number | null): string {
   const parsed = parseVisibilityDisplay(value);
   if (!parsed) {
     return "VIS --";
   }
-  const kmLabel = formatKm(parsed.km);
-  return `VIS ${parsed.source} sm / ${parsed.plus ? kmLabel.replace(" km", "+ km") : kmLabel}`;
+  const upperBound = parsed.qualifier === "<" || parsed.qualifier === "≤";
+  if (parsed.km > 10 && !upperBound) {
+    return "VIS >10 km";
+  }
+  const kmLabel = `${parsed.qualifier}${formatKm(parsed.km)}`;
+  // Retain source detail for low visibility and upper bounds, since an upper
+  // bound cannot establish that actual visibility is above either threshold.
+  if (parsed.km < 5 || upperBound) {
+    return `VIS ${parsed.source} sm / ${kmLabel}`;
+  }
+  return `VIS ${kmLabel}`;
 }
 
 function lowestCeilingFt(sources: SignificantWeatherSource[]): number | null {
@@ -461,17 +457,14 @@ function significantWeatherSummary(
       .filter((value) => Number.isFinite(value))
   );
   const visibilities = sources
-    .map((source) => ({
-      source: source.visibility,
-      km: parseVisibilityKm(source.visibility)
-    }))
-    .filter((value): value is { source: string | number | null; km: number } => value.km !== null)
+    .map((source) => parseVisibilityDisplay(source.visibility))
+    .filter((value): value is VisibilityDisplay => visibilityIsBelow(value, LOW_VISIBILITY_KM))
     .sort((a, b) => a.km - b.km);
   const lowestVisibility = visibilities[0] ?? null;
   const ceiling = lowestCeilingFt(sources);
   const parts = [
     ...codes.slice(0, 2),
-    lowestVisibility !== null && lowestVisibility.km < LOW_VISIBILITY_KM
+    lowestVisibility !== null
       ? formatVisibility(lowestVisibility.source)
       : "",
     ceiling !== null && ceiling < LOW_CEILING_FT ? `CIG ${formatCeilingFt(ceiling)}` : "",
@@ -485,7 +478,7 @@ function significantWeatherSummary(
   const alert =
     codes.some((code) => code.startsWith("+") || /(SQ|FC)/.test(code)) ||
     gust >= STRONG_GUST_KT ||
-    (lowestVisibility !== null && lowestVisibility.km < VERY_LOW_VISIBILITY_KM) ||
+    visibilities.some((visibility) => visibilityIsBelow(visibility, VERY_LOW_VISIBILITY_KM)) ||
     (ceiling !== null && ceiling < VERY_LOW_CEILING_FT);
   return { label: parts.join("\n"), tone: alert ? "alert" : "caution" };
 }
@@ -772,7 +765,7 @@ function weatherStatus(
   endsAt: Date
 ): { status: RouteAirportWeatherStatus; weatherCodes: string[] } {
   if (!weather) {
-    return { status: "not-queried", weatherCodes: [] };
+    return { status: "no-data", weatherCodes: [] };
   }
 
   const overlappingTaf = weather.tafPeriods.filter((period) =>
@@ -824,7 +817,7 @@ function operationalUnavailableStats(
   };
 }
 
-function operationalFlightKey(flight: AirLabsOperationalFlight): string {
+function operationalFlightKey(flight: OperationalFlight): string {
   return [
     flight.flightIata ?? flight.flightIcao ?? "UNKNOWN",
     flight.depIata ?? "DEP",
@@ -833,7 +826,7 @@ function operationalFlightKey(flight: AirLabsOperationalFlight): string {
   ].join("|");
 }
 
-function operationalFlightTime(flight: AirLabsOperationalFlight): Date | null {
+function operationalFlightTime(flight: OperationalFlight): Date | null {
   const timestamp = flight.depTimeTs ?? flight.arrTimeTs;
   if (timestamp === null) {
     return null;
@@ -843,7 +836,7 @@ function operationalFlightTime(flight: AirLabsOperationalFlight): Date | null {
 }
 
 function operationalFlightInWindow(
-  flight: AirLabsOperationalFlight,
+  flight: OperationalFlight,
   startsAt: Date,
   endsAt: Date
 ): boolean {
@@ -855,19 +848,19 @@ function isCancelledStatus(status: string | null): boolean {
   return /cancel/i.test(status ?? "");
 }
 
-function isDelayedFlight(flight: AirLabsOperationalFlight): boolean {
+function isDelayedFlight(flight: OperationalFlight): boolean {
   const minutes =
     flight.delayedMinutes ?? flight.depDelayedMinutes ?? flight.arrDelayedMinutes ?? 0;
   return minutes >= OPERATIONAL_DELAY_THRESHOLD_MINUTES;
 }
 
 function buildOperationalWindowStats(args: {
-  raw: AirLabsAirportOperationalData | undefined;
+  raw: AirportOperationalData | undefined;
   startsAt: Date;
   endsAt: Date;
 }): OperationalWindowStats {
   if (!args.raw) {
-    return operationalUnavailableStats(args.startsAt, args.endsAt, "AirLabs data not requested.");
+    return operationalUnavailableStats(args.startsAt, args.endsAt, "Airport operational data is not connected.");
   }
   if (args.raw.unavailableReason) {
     return operationalUnavailableStats(args.startsAt, args.endsAt, args.raw.unavailableReason);
@@ -880,7 +873,7 @@ function buildOperationalWindowStats(args: {
     return operationalUnavailableStats(
       args.startsAt,
       args.endsAt,
-      "No AirLabs schedules in this window."
+      "No usable airport schedules in this window."
     );
   }
 
@@ -949,7 +942,11 @@ function aggregateOperationalStats(
 ): OperationalWindowStats {
   const available = stats.filter((item) => item.status === "available");
   if (available.length === 0) {
-    return operationalUnavailableStats(startsAt, endsAt, "No available AirLabs airport stats.");
+    return operationalUnavailableStats(
+      startsAt,
+      endsAt,
+      stats[0]?.unavailableReason ?? "No usable airport operational statistics."
+    );
   }
   const totalFlights = available.reduce((sum, item) => sum + item.totalFlights, 0);
   const delayedFlights = available.reduce((sum, item) => sum + item.delayedFlights, 0);
@@ -976,6 +973,7 @@ function weatherForRanking(
 ): {
   visibilityLabel: string;
   visibilityKm: number | null;
+  visibility: VisibilityDisplay | null;
   weatherCodes: string[];
   tone: FlightSituationCellTone;
 } {
@@ -983,6 +981,7 @@ function weatherForRanking(
     return {
       visibilityLabel: "VIS --",
       visibilityKm: null,
+      visibility: null,
       weatherCodes: [],
       tone: "plain"
     };
@@ -999,17 +998,20 @@ function weatherForRanking(
       ]
     : weather.tafPeriods.filter((period) => overlaps(period, startsAt, endsAt));
   const visibility = sources
-    .map((source) => ({
-      source: source.visibility,
-      km: parseVisibilityKm(source.visibility)
-    }))
-    .filter((value): value is { source: string | null; km: number } => value.km !== null)
-    .sort((a, b) => a.km - b.km)[0];
+    .map((source) => parseVisibilityDisplay(source.visibility))
+    .filter((value): value is VisibilityDisplay => value !== null)
+    .sort((a, b) =>
+      Number(visibilityIsBelow(b, VERY_LOW_VISIBILITY_KM)) - Number(visibilityIsBelow(a, VERY_LOW_VISIBILITY_KM)) ||
+      Number(visibilityIsBelow(b, LOW_VISIBILITY_KM)) - Number(visibilityIsBelow(a, LOW_VISIBILITY_KM)) ||
+      a.km - b.km
+    )[0] ?? null;
   const significant = sources.length > 0 ? significantWeatherSummary(sources) : null;
 
   return {
     visibilityLabel: visibility ? formatVisibility(visibility.source) : "VIS --",
-    visibilityKm: visibility?.km ?? null,
+    // Numeric consumers must not mistake a reported bound for an exact distance.
+    visibilityKm: visibility?.qualifier === "" ? visibility.km : null,
+    visibility,
     weatherCodes: uniqueCodes(sources.flatMap((source) => source.weatherCodes)),
     tone: significant?.tone ?? "plain"
   };
@@ -1018,7 +1020,7 @@ function weatherForRanking(
 function riskLevel(args: {
   stats: OperationalWindowStats;
   weatherTone: FlightSituationCellTone;
-  visibilityKm: number | null;
+  visibility: VisibilityDisplay | null;
 }): { level: OperationalRiskLevel; reasons: string[] } {
   if (args.stats.status !== "available") {
     return {
@@ -1040,8 +1042,8 @@ function riskLevel(args: {
   if (args.weatherTone === "alert") {
     reasons.push("alert weather");
   }
-  if (args.visibilityKm !== null && args.visibilityKm < VERY_LOW_VISIBILITY_KM) {
-    reasons.push(`VIS ${formatKm(args.visibilityKm)}`);
+  if (visibilityIsBelow(args.visibility, VERY_LOW_VISIBILITY_KM)) {
+    reasons.push(formatVisibility(args.visibility!.source));
   }
   if (reasons.length > 0) {
     return { level: "high", reasons };
@@ -1059,8 +1061,8 @@ function riskLevel(args: {
   if (args.weatherTone === "caution") {
     reasons.push("weather watch");
   }
-  if (args.visibilityKm !== null && args.visibilityKm < LOW_VISIBILITY_KM) {
-    reasons.push(`VIS ${formatKm(args.visibilityKm)}`);
+  if (visibilityIsBelow(args.visibility, LOW_VISIBILITY_KM)) {
+    reasons.push(formatVisibility(args.visibility!.source));
   }
   if (reasons.length > 0) {
     return { level: "medium", reasons };
@@ -1072,7 +1074,7 @@ function riskLevel(args: {
 export function buildOperationalDashboardData(args: {
   originFlights: NormalizedFlight[];
   weather: AirportWeather[];
-  airLabsByIata: Map<string, AirLabsAirportOperationalData>;
+  operationalByIata: Map<string, AirportOperationalData>;
   now: Date;
   hours: DashboardData["hours"];
 }): Pick<
@@ -1088,7 +1090,7 @@ export function buildOperationalDashboardData(args: {
 
   const insights = [...originCounts.entries()]
     .map(([airportIata, value]) => {
-      const raw = args.airLabsByIata.get(airportIata);
+      const raw = args.operationalByIata.get(airportIata);
       const current = buildOperationalWindowStats({ raw, startsAt, endsAt });
       const past6 = buildOperationalWindowStats({
         raw,
@@ -1121,7 +1123,7 @@ export function buildOperationalDashboardData(args: {
   );
   const availableAirports = insights.filter((item) => item.current.status === "available").length;
   const totals = {
-    provider: "AirLabs" as const,
+    provider: "Flightradar24" as const,
     status: currentAggregate.status,
     windowStart: startsAt.toISOString(),
     windowEnd: endsAt.toISOString(),
@@ -1154,7 +1156,7 @@ export function buildOperationalDashboardData(args: {
       const startsAt = new Date(hour.startsAt);
       const endsAt = new Date(hour.endsAt);
       const stats = buildOperationalWindowStats({
-        raw: args.airLabsByIata.get(airportIata),
+        raw: args.operationalByIata.get(airportIata),
         startsAt,
         endsAt
       });
@@ -1167,7 +1169,7 @@ export function buildOperationalDashboardData(args: {
       const risk = riskLevel({
         stats,
         weatherTone: weather.tone,
-        visibilityKm: weather.visibilityKm
+        visibility: weather.visibility
       });
       return {
         id: `${hour.hourOffset}-${airportIata}`,
@@ -1348,9 +1350,9 @@ function tafTimelineCell(args: {
   if (!args.weather || !args.weather.tafQueried) {
     return {
       ...base,
-      tone: "not-queried",
-      summary: "Not queried",
-      details: ["TAF was not queried for this airport."]
+      tone: "no-data",
+      summary: "NO DATA",
+      details: ["No usable TAF data or airport station identifier is available."]
     };
   }
 
@@ -1432,22 +1434,17 @@ export function buildRouteAirportTafTimelines(args: {
   return [...routeCounts(scoped).entries()]
     .map(([airportIata, value]) => {
       const airportWeather = weatherByIata.get(airportIata);
-      if (!airportWeather?.tafQueried) {
-        return null;
-      }
-
       return {
         airportIata,
         airport: value.airport,
         flightCount: value.count,
         arrivalCount: value.arrivalCount,
         departureCount: value.departureCount,
-        rawTaf: airportWeather.rawTaf,
-        issuedAt: airportWeather.tafIssuedAt,
+        rawTaf: airportWeather?.rawTaf ?? null,
+        issuedAt: airportWeather?.tafIssuedAt ?? null,
         cells: hours.map((hour) => tafTimelineCell({ weather: airportWeather, hour }))
       };
     })
-    .filter((timeline): timeline is RouteAirportTafTimeline => Boolean(timeline))
     .sort((a, b) => b.flightCount - a.flightCount || a.airportIata.localeCompare(b.airportIata));
 }
 
@@ -1551,28 +1548,23 @@ export async function getDashboardData(
   });
   const weatherQueryFlights = [
     ...new Map(
-      [...selectedWindowFlights, ...originArrivalFlights].map((flight) => [flight.id, flight])
+      [
+        ...selectedWindowFlights,
+        ...originArrivalFlights,
+        ...flights.filter(
+          (flight) => flight.direction === "arrival" && inWindow(flight, now, addHours(now, SITUATION_HOURS))
+        )
+      ].map((flight) => [flight.id, flight])
     ).values()
   ];
-  const weatherQueryAirports = prioritizeAirportsForWeather(weatherQueryFlights, airports);
-  if (airports.length > weatherQueryAirports.length) {
-    warnings.push(
-      `Weather lookup covered ${weatherQueryAirports.length} airports selected by current-window traffic out of ${airports.length} mapped airports loaded for the wider internal data window; flight totals still include every selected-window route airport.`
-    );
-  }
+  const weatherQueryAirports = selectAirportsForWeather(weatherQueryFlights, airports);
   const arrivalOriginAirports = [
     ...routeCounts(originArrivalFlights).values()
   ]
     .map((value) => value.airport)
     .filter((airport): airport is AirportMetadata => Boolean(airport));
-  const [weather, airLabsByIata] = await Promise.all([
-    fetchWeatherForAirports(weatherQueryAirports, warnings),
-    fetchAirLabsAirportOperationalData({
-      airports: arrivalOriginAirports,
-      warnings,
-      delayThresholdMinutes: OPERATIONAL_DELAY_THRESHOLD_MINUTES
-    })
-  ]);
+  const operationalByIata = createUnavailableFlightradar24Data(arrivalOriginAirports);
+  const weather = await fetchWeatherForAirports(weatherQueryAirports, warnings);
   const hourly = buildHourlyArrivalTable({
     flights,
     weather,
@@ -1584,7 +1576,7 @@ export async function getDashboardData(
   const operational = buildOperationalDashboardData({
     originFlights: originArrivalFlights,
     weather,
-    airLabsByIata,
+    operationalByIata,
     now,
     hours: hourly.hours
   });

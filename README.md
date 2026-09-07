@@ -11,13 +11,16 @@ source-reported airport weather context.
   arrival counts.
 - Direction filter for inbound, outbound, or both directions. Combined mode
   includes arrivals and departures in the chart, summaries, airport watch list,
-  and route-airport weather match panel. The situational-awareness table remains
+  and route-airport TAF table. The situational-awareness table remains
   fixed to arrivals.
 - Current-window summaries for all selected passenger/cargo flights, all route
   airports, and route airports matched to METAR/TAF weather.
-- AirLabs-backed arrival-origin operational insights: origin-airport departure
-  delay/cancellation rates, affected-flight counts, totals, Past 6 Hours context,
-  and hourly route-airport ranking.
+- Collapsible chart and table sections, all closed by default. Click a heading
+  or triangle to expand it. Collapsing a section does not skip its data queries.
+- Arrival-origin operational insights and hourly ranking UI now name Flightradar24
+  as the requested source. Operational statistics remain explicitly unavailable
+  until an authorised airport delay/cancellation feed is connected; AirLabs is
+  no longer queried.
 - Deep convection status derived from VHHH METAR at `T(now)` and overlapping VHHH
   TAF periods for future columns. This is not an official alert feed or severity
   rating.
@@ -26,8 +29,9 @@ source-reported airport weather context.
 - Top 10 route airports by region for the selected window. Inbound mode lists
   arrival origins, outbound mode lists departure destinations, and combined mode
   includes both.
-- Route-airport weather matches aggregated by airport, including source, codes,
-  observed time, forecast period, and selected-window flight count.
+- The separate Route Airport Weather Matches panel has been removed. Weather
+  code counts remain in the summary, and METAR/TAF information remains in the
+  airport and hourly weather views.
 - Local Hong Kong time and UTC `(Z)` time on the hourly chart and on the
   situational-awareness table timeslot header.
 - Route-airport groups for Greater China, Asia, the Middle East, Oceania,
@@ -37,9 +41,11 @@ source-reported airport weather context.
 
 - HKIA public flight REST endpoint for passenger/cargo arrivals and departures.
 - NOAA AviationWeather API for METAR/TAF weather reports.
-- AirLabs Flight Schedules and Flight Delay APIs for optional origin-airport
-  operational disruption statistics. Configure `AIRLABS_API_KEY`; if it is not
-  set, operational panels remain visible but show unavailable data.
+- Flightradar24 is the requested source for future operational statistics. The
+  public map is not a data API; its public tracking API does not supply the
+  schedules/cancellations required to calculate airport delay/cancellation rates.
+  A link to the official airport disruption page is provided for manual checking.
+  There is no automatic FR24 operational-data import yet.
 - OurAirports public airport database as a fallback for IATA to ICAO/coordinate
   mapping.
 
@@ -52,11 +58,10 @@ npm run dev
 
 Open `http://localhost:3000`.
 
-Optional operational statistics:
-
-```bash
-AIRLABS_API_KEY=your_key npm run dev
-```
+Operational data integration requires an authorised Flightradar24 airport
+operations feed and its schema. A normal public tracking API key is not enough.
+No AirLabs key is read or used. Do not substitute published daily statistics for
+hourly or Past 6 Hours measurements.
 
 ## Verification
 
@@ -79,21 +84,20 @@ npm run build
 - `En route`, `on land`, and `within 100km` rows are schedule-and-distance
   estimates. `En route` means estimated in air but not within 100 km of Hong Kong;
   `within 100km` means estimated in air and close to Hong Kong.
-- Weather lookup is a coverage/performance limit, not a business filter. The
-  dashboard keeps all route airports in flight totals and rankings, while querying
-  weather for top route airports by selected-window flight count. Airports outside
-  that weather-query coverage are shown as `Not queried`, not as `NO DATA`.
-- Operational insights use AirLabs airport-wide departures for HKIA arrival
-  origin airports. They are not limited to origin-to-HKG flights, so they provide
-  context on whether the origin airport itself is disrupted.
-- AirLabs schedules provide the denominator for operational rates. Delayed flights
-  use a 30-minute threshold, and cancelled flights are derived from cancellation
-  status in the provider data.
-- Past 6 Hours summarizes AirLabs records returned inside the preceding six-hour
-  window; complete historical coverage is not verified. With no usable sample,
-  the UI explicitly shows `Past 6h unavailable`.
-- AviationWeather `visib` values are shown with explicit units as statute miles
-  plus converted kilometres, for example `VIS 1.99 sm / 3.2 km`.
+- Every relevant airport with a known ICAO code is queried for both METAR and TAF,
+  including current-window routes and the fixed 16-hour arrival view. There is no
+  airport-count cap. Queries use batches, limited concurrency and one retry per
+  failed batch; successful batches survive failures elsewhere. A missing report
+  or station identifier is still `NO DATA`, never assumed to be good weather.
+- The provider-neutral operational aggregation code is retained for a future
+  authorised feed and tested with mock normalized records. Its existing 30-minute
+  delay threshold is an application rule, not a verified Flightradar24 definition.
+- Past 6 Hours, delays, cancellations and risk remain unavailable without the
+  authorised operational feed. No values or historical coverage are invented.
+- AviationWeather `visib` is interpreted as statute miles. Below 5 km the UI shows
+  source sm and converted km (e.g. `VIS 1.99 sm / 3.2 km`); 5–10 km shows km only;
+  above 10 km shows `VIS >10 km`. Source bounds are preserved: `6+ sm` becomes
+  `VIS >9.7 km`, and `CAVOK` gives `VIS ≥10 km`, not an invented exact value.
 - Route geometry and schedule-based flight phase fields remain available in the
   API for future GIS map work, but they are not part of the default cleaned
   dashboard display.
@@ -113,10 +117,8 @@ npm run build
   the table threshold, but it is not converted into an operational severity.
   Operational minima depend on information not present in this dataset, including
   runway, aircraft, operator, and official warning criteria.
-- The route-airport weather match panel aggregates by airport inside the selected
-  window and does not imply severity.
-- Missing airport, METAR, or TAF data is shown as `Unknown`, `NO DATA`, or
-  `Not queried` as applicable; absence is never interpreted as no reported weather.
+- Missing airport, METAR, or TAF data is shown as `Unknown` or `NO DATA`;
+  absence is never interpreted as no reported weather.
 - Greater China includes mainland China, Hong Kong, Macau, and Taiwan.
 
 ## Official Weather References
@@ -128,3 +130,9 @@ npm run build
 The AviationWeather documentation describes METAR as terminal observations, TAF
 as terminal forecasts, and SIGMET as a separate aviation-warning product. This
 dashboard does not relabel a METAR/TAF weather group as a SIGMET or warning.
+
+## Flightradar24 Integration References
+
+- [Official API FAQ](https://fr24api.flightradar24.com/docs/faq)
+- [Flight Summary fields](https://fr24api.flightradar24.com/docs/endpoints/flight-summary)
+- [Airport disruption page for manual reference](https://www.flightradar24.com/data/airport-disruption)

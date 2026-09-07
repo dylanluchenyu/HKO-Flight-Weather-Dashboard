@@ -45,6 +45,8 @@ interface NoaaTaf {
 }
 
 const WEATHER_QUERY_BATCH_SIZE = 45;
+const WEATHER_QUERY_CONCURRENCY = 2;
+const WEATHER_QUERY_ATTEMPTS = 2;
 
 // Meanings below are taken directly from the HKO METAR/SPECI and TAF decoding
 // guides. Unknown codes remain visible verbatim instead of being reclassified.
@@ -355,6 +357,10 @@ async function fetchNoaa<T>(
     if (!response.ok) {
       throw new Error(`${endpoint.toUpperCase()} ${response.status}`);
     }
+    // NOAA uses 204 when none of the requested stations has a report.
+    if (response.status === 204) {
+      return [];
+    }
     return (await response.json()) as T[];
   } finally {
     clearTimeout(timeout);
@@ -372,11 +378,33 @@ function chunkArray<T>(items: T[], size: number): T[][] {
 async function fetchNoaaBatched<T>(
   endpoint: "metar" | "taf",
   icaos: string[],
+  warnings: string[],
   timeoutMs = 8000
 ): Promise<T[]> {
   const batches = chunkArray(icaos, WEATHER_QUERY_BATCH_SIZE);
-  const results = await Promise.all(
-    batches.map((batch) => fetchNoaa<T>(endpoint, batch, timeoutMs))
+  const results: T[][] = batches.map(() => []);
+  let nextBatch = 0;
+  async function worker() {
+    while (nextBatch < batches.length) {
+      const index = nextBatch++;
+      const batch = batches[index];
+      for (let attempt = 1; attempt <= WEATHER_QUERY_ATTEMPTS; attempt += 1) {
+        try {
+          results[index] = await fetchNoaa<T>(endpoint, batch, timeoutMs);
+          break;
+        } catch (error) {
+          if (attempt === WEATHER_QUERY_ATTEMPTS) {
+            warnings.push(
+              `NOAA ${endpoint.toUpperCase()} unavailable after ${attempt} attempts for ${batch.join(", ")}: ${String(error)}. Other successful airport batches are retained.`
+            );
+          }
+        }
+      }
+    }
+  }
+  // Batch size and concurrency control request pressure; neither limits coverage.
+  await Promise.all(
+    Array.from({ length: Math.min(WEATHER_QUERY_CONCURRENCY, batches.length) }, worker)
   );
   return results.flat();
 }
@@ -385,35 +413,15 @@ export async function fetchWeatherForAirports(
   airports: AirportMetadata[],
   warnings: string[]
 ): Promise<AirportWeather[]> {
-  const icaos = [...new Set(airports.map((airport) => airport.icao))].slice(0, 90);
+  const icaos = [...new Set(airports.map((airport) => airport.icao).filter(Boolean))];
   if (icaos.length === 0) {
     return [];
   }
 
-  const tafIcaos = icaos.slice(0, 45);
-  if (icaos.length > tafIcaos.length) {
-    warnings.push(
-      "TAF forecast lookup limited to first 45 weather-queried route airports for faster loading."
-    );
-  }
-
-  let metars: NoaaMetar[] = [];
-  let tafs: NoaaTaf[] = [];
-  const [metarResult, tafResult] = await Promise.allSettled([
-    fetchNoaaBatched<NoaaMetar>("metar", icaos, 8000),
-    fetchNoaaBatched<NoaaTaf>("taf", tafIcaos, 8000)
+  const [metars, tafs] = await Promise.all([
+    fetchNoaaBatched<NoaaMetar>("metar", icaos, warnings, 8000),
+    fetchNoaaBatched<NoaaTaf>("taf", icaos, warnings, 8000)
   ]);
-
-  if (metarResult.status === "fulfilled") {
-    metars = metarResult.value;
-  } else {
-    warnings.push(`NOAA METAR unavailable: ${String(metarResult.reason)}`);
-  }
-  if (tafResult.status === "fulfilled") {
-    tafs = tafResult.value;
-  } else {
-    warnings.push(`NOAA TAF unavailable: ${String(tafResult.reason)}`);
-  }
 
   const metarByIcao = new Map(metars.map((metar) => [metar.icaoId, metar]));
   const tafByIcao = new Map(tafs.map((taf) => [taf.icaoId, taf]));
@@ -424,7 +432,7 @@ export async function fetchWeatherForAirports(
       airportIcao: airport.icao,
       metar: metarByIcao.get(airport.icao),
       taf: tafByIcao.get(airport.icao),
-      tafQueried: tafIcaos.includes(airport.icao)
+      tafQueried: icaos.includes(airport.icao)
     })
   );
 }
